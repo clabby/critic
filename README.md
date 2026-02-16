@@ -8,7 +8,7 @@ Terminal UI for browsing GitHub pull request review threads.
 - Search screen with fuzzy finding across open pull requests.
 - Review screen with split panes:
   - Left: comment/thread navigator.
-  - Right: rendered thread preview (markdown + treesitter-highlighted code blocks).
+  - Right: rendered thread preview (markdown + syntax-highlighted code blocks via `tui-syntax-highlight`).
 - Review mutations:
   - Reply to review threads.
   - Resolve/unresolve threads.
@@ -92,7 +92,7 @@ cargo test
 - `src/github/comments.rs`: issue/review comments fetch + thread organization + resolution state
 - `src/search/fuzzy.rs`: fuzzy ranking via `fuzzy-matcher`
 - `src/render/markdown.rs`: markdown renderer
-- `src/render/syntax.rs`: treesitter code block highlighting
+- `src/render/syntax.rs`: `tui-syntax-highlight` code block highlighting
 - `src/ui/components/*`: shared/header components
 - `src/ui/screens/search.rs`: PR search screen
 - `src/ui/screens/review.rs`: split-pane review screen

@@ -1,35 +1,17 @@
-//! Treesitter-backed fenced code highlighting for the right pane.
+//! Fenced code highlighting via `tui-syntax-highlight` + `syntect`.
 
-use anyhow::Result;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use std::collections::HashMap;
-use tree_sitter_highlight::{HighlightConfiguration, HighlightEvent, Highlighter};
-
-const HIGHLIGHT_NAMES: &[&str] = &[
-    "attribute",
-    "comment",
-    "constant",
-    "constant.builtin",
-    "constructor",
-    "function",
-    "function.builtin",
-    "keyword",
-    "number",
-    "operator",
-    "property",
-    "punctuation",
-    "string",
-    "tag",
-    "type",
-    "type.builtin",
-    "variable",
-    "variable.builtin",
-];
+use syntect::highlighting::{Theme, ThemeSet};
+use syntect::parsing::{SyntaxReference, SyntaxSet};
+use syntect::util::LinesWithEndings;
+use tui_syntax_highlight::Highlighter;
 
 /// Syntax highlighter for fenced markdown code blocks.
+#[derive(Clone)]
 pub struct SyntaxHighlighter {
-    configs: HashMap<String, HighlightConfiguration>,
+    syntax_set: SyntaxSet,
+    highlighter: Highlighter,
 }
 
 impl Default for SyntaxHighlighter {
@@ -39,119 +21,57 @@ impl Default for SyntaxHighlighter {
 }
 
 impl SyntaxHighlighter {
-    /// Initializes known treesitter language configurations.
+    /// Initializes default syntect syntax/theme assets.
     pub fn new() -> Self {
-        let mut configs = HashMap::new();
+        let syntax_set = SyntaxSet::load_defaults_newlines();
+        let theme_set = ThemeSet::load_defaults();
+        let theme = select_theme(&theme_set);
+        let highlighter = Highlighter::new(theme).line_numbers(false);
 
-        insert_config(
-            &mut configs,
-            "rust",
-            tree_sitter_rust::LANGUAGE.into(),
-            tree_sitter_rust::HIGHLIGHTS_QUERY,
-            "",
-            "",
-        );
-
-        insert_config(
-            &mut configs,
-            "go",
-            tree_sitter_go::LANGUAGE.into(),
-            tree_sitter_go::HIGHLIGHTS_QUERY,
-            "",
-            "",
-        );
-
-        insert_config(
-            &mut configs,
-            "javascript",
-            tree_sitter_javascript::LANGUAGE.into(),
-            tree_sitter_javascript::HIGHLIGHT_QUERY,
-            "",
-            "",
-        );
-
-        insert_config(
-            &mut configs,
-            "typescript",
-            tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-            tree_sitter_typescript::HIGHLIGHTS_QUERY,
-            "",
-            "",
-        );
-
-        insert_config(
-            &mut configs,
-            "python",
-            tree_sitter_python::LANGUAGE.into(),
-            tree_sitter_python::HIGHLIGHTS_QUERY,
-            "",
-            "",
-        );
-
-        Self { configs }
-    }
-
-    /// Highlights a fenced code block with treesitter when the language is supported.
-    pub fn highlight(&mut self, lang: &str, source: &str) -> Vec<Line<'static>> {
-        let normalized = normalize_lang(lang);
-        let Some(config) = self.configs.get(&normalized) else {
-            return plain_code_lines(source);
-        };
-
-        match self.highlight_with_config(config, source) {
-            Ok(lines) if !lines.is_empty() => lines,
-            _ => plain_code_lines(source),
+        Self {
+            syntax_set,
+            highlighter,
         }
     }
 
-    fn highlight_with_config(
-        &self,
-        config: &HighlightConfiguration,
-        source: &str,
-    ) -> Result<Vec<Line<'static>>> {
-        let mut highlighter = Highlighter::new();
-        let events = highlighter.highlight(config, source.as_bytes(), None, |_| None)?;
+    /// Highlights a fenced code block using a best-effort language lookup.
+    pub fn highlight(&self, lang: &str, source: &str) -> Vec<Line<'static>> {
+        let syntax = resolve_syntax(&self.syntax_set, lang);
 
-        let mut lines: Vec<Vec<Span<'static>>> = vec![Vec::new()];
-        let mut style_stack: Vec<Style> = vec![base_code_style()];
-
-        for event in events {
-            match event? {
-                HighlightEvent::HighlightStart(group) => {
-                    let style = style_for_capture(group.0);
-                    style_stack.push(style);
-                }
-                HighlightEvent::HighlightEnd => {
-                    if style_stack.len() > 1 {
-                        style_stack.pop();
-                    }
-                }
-                HighlightEvent::Source { start, end } => {
-                    let text = &source[start..end];
-                    let style = *style_stack.last().unwrap_or(&base_code_style());
-                    push_text_with_style(&mut lines, text, style);
-                }
-            }
+        match self.highlighter.highlight_lines(
+            LinesWithEndings::from(source),
+            syntax,
+            &self.syntax_set,
+        ) {
+            Ok(text) => text.lines,
+            Err(_) => plain_code_lines(source),
         }
-
-        Ok(lines.into_iter().map(Line::from).collect())
     }
 }
 
-fn insert_config(
-    configs: &mut HashMap<String, HighlightConfiguration>,
-    key: &str,
-    language: tree_sitter::Language,
-    highlights: &str,
-    injections: &str,
-    locals: &str,
-) {
-    let Ok(mut config) = HighlightConfiguration::new(language, "", highlights, injections, locals)
-    else {
-        return;
-    };
-    config.configure(HIGHLIGHT_NAMES);
-    configs.insert(key.to_owned(), config);
+fn select_theme(theme_set: &ThemeSet) -> Theme {
+    const PREFERRED_THEME_NAMES: &[&str] = &["base16-ocean.dark", "base16-eighties.dark"];
+
+    for name in PREFERRED_THEME_NAMES {
+        if let Some(theme) = theme_set.themes.get(*name) {
+            return theme.clone();
+        }
+    }
+
+    theme_set
+        .themes
+        .values()
+        .next()
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn resolve_syntax<'a>(syntax_set: &'a SyntaxSet, lang: &str) -> &'a SyntaxReference {
+    let normalized = normalize_lang(lang);
+    syntax_set
+        .find_syntax_by_token(&normalized)
+        .or_else(|| syntax_set.find_syntax_by_name(&normalized))
+        .unwrap_or_else(|| syntax_set.find_syntax_plain_text())
 }
 
 fn normalize_lang(lang: &str) -> String {
@@ -164,49 +84,14 @@ fn normalize_lang(lang: &str) -> String {
     }
 }
 
-fn style_for_capture(index: usize) -> Style {
-    let name = HIGHLIGHT_NAMES.get(index).copied().unwrap_or("");
-
-    if name.contains("comment") {
-        Style::default().fg(Color::Gray)
-    } else if name.contains("string") {
-        Style::default().fg(Color::Green)
-    } else if name.contains("keyword") {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
-    } else if name.contains("number") || name.contains("constant") {
-        Style::default().fg(Color::Cyan)
-    } else if name.contains("function") {
-        Style::default().fg(Color::LightBlue)
-    } else if name.contains("type") {
-        Style::default().fg(Color::Magenta)
-    } else {
-        base_code_style()
-    }
-}
-
-fn base_code_style() -> Style {
-    Style::default().fg(Color::Rgb(210, 210, 200))
-}
-
-fn push_text_with_style(lines: &mut Vec<Vec<Span<'static>>>, text: &str, style: Style) {
-    for (index, segment) in text.split('\n').enumerate() {
-        if index > 0 {
-            lines.push(Vec::new());
-        }
-
-        if !segment.is_empty() {
-            if let Some(last) = lines.last_mut() {
-                last.push(Span::styled(segment.to_owned(), style));
-            }
-        }
-    }
-}
-
 fn plain_code_lines(source: &str) -> Vec<Line<'static>> {
     source
         .lines()
-        .map(|line| Line::from(vec![Span::styled(line.to_owned(), base_code_style())]))
+        .map(|line| {
+            Line::from(vec![Span::styled(
+                line.to_owned(),
+                Style::default().fg(Color::Rgb(210, 210, 200)),
+            )])
+        })
         .collect()
 }

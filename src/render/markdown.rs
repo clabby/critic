@@ -17,7 +17,7 @@ struct CodeBlockState {
     content: String,
 }
 
-/// Markdown renderer with treesitter syntax highlighting for fenced code blocks.
+/// Markdown renderer with syntect-based fenced code highlighting.
 #[derive(Default)]
 pub struct MarkdownRenderer {
     syntax: SyntaxHighlighter,

@@ -10,7 +10,7 @@ use crate::ui::components::shared::short_preview;
 use crate::ui::theme;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::Style;
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
@@ -179,7 +179,7 @@ fn render_right_pane(
         .borders(Borders::ALL)
         .border_style(theme::border());
 
-    let lines = if let Some(node) = review.selected_node() {
+    let mut lines = if let Some(node) = review.selected_node() {
         match (&node.kind, &node.comment) {
             (ListNodeKind::Issue, CommentRef::Issue(issue)) => {
                 render_issue_preview(markdown, issue)
@@ -214,6 +214,8 @@ fn render_right_pane(
     } else {
         (inner, None)
     };
+
+    fill_fenced_code_backgrounds(&mut lines, text_area.width);
 
     let viewport_height = usize::from(text_area.height);
     let content_height = wrapped_content_height(&lines, text_area.width);
@@ -261,4 +263,50 @@ fn wrapped_content_height(lines: &[Line<'_>], width: u16) -> usize {
             }
         })
         .sum()
+}
+
+fn fill_fenced_code_backgrounds(lines: &mut [Line<'static>], width: u16) {
+    let width = usize::from(width);
+    if width == 0 {
+        return;
+    }
+
+    for line in lines {
+        if !is_fenced_code_line(line) {
+            continue;
+        }
+
+        let Some(background) = line.spans.iter().find_map(|span| span.style.bg) else {
+            continue;
+        };
+
+        let line_width = line.width();
+        if line_width >= width {
+            continue;
+        }
+
+        let padding = width - line_width;
+        line.spans.push(Span::styled(
+            " ".repeat(padding),
+            Style::default().bg(background).fg(Color::Black),
+        ));
+    }
+}
+
+fn is_fenced_code_line(line: &Line<'_>) -> bool {
+    let has_background = line.spans.iter().any(|span| span.style.bg.is_some());
+    if !has_background {
+        return false;
+    }
+
+    let mut leading_space_spans = 0usize;
+    for span in &line.spans {
+        if span.style.fg == Some(Color::DarkGray) && span.content.chars().all(|ch| ch == ' ') {
+            leading_space_spans += 1;
+        } else {
+            break;
+        }
+    }
+
+    leading_space_spans >= 2
 }

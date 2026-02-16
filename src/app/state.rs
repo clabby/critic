@@ -8,7 +8,7 @@ use crate::search::fuzzy::rank_pull_requests;
 use std::collections::{HashMap, HashSet};
 
 /// Spinner frames used for active async operations.
-pub const SPINNER_FRAMES: [char; 4] = ['|', '/', '-', '\\'];
+pub const SPINNER_FRAMES: [&str; 8] = ["⢎⡰", "⢎⡡", "⢎⡑", "⢎⠱", "⠎⡱", "⢊⡱", "⢌⡱", "⢆⡱"];
 
 /// Top-level mutable application state.
 #[derive(Debug)]
@@ -147,7 +147,7 @@ impl AppState {
         let frame = SPINNER_FRAMES
             .get(operation.spinner_index)
             .copied()
-            .unwrap_or('|');
+            .unwrap_or("⢎⡰");
         Some(format!("{frame} {}", operation.label))
     }
 }
