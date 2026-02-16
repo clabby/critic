@@ -1,12 +1,17 @@
 //! Diff row renderer shared by the review diff pane.
 
-use crate::app::state::{PendingReviewCommentDraft, PendingReviewCommentSide};
-use crate::domain::{
-    PullRequestDiffFile, PullRequestDiffHighlightRange, PullRequestDiffRow, PullRequestDiffRowKind,
+use crate::{
+    app::state::{PendingReviewCommentDraft, PendingReviewCommentSide},
+    domain::{
+        PullRequestDiffFile, PullRequestDiffHighlightRange, PullRequestDiffRow,
+        PullRequestDiffRowKind,
+    },
+    ui::theme,
 };
-use crate::ui::theme;
-use ratatui::style::{Color, Style};
-use ratatui::text::{Line, Span};
+use ratatui::{
+    style::{Color, Style},
+    text::{Line, Span},
+};
 
 pub(crate) struct DiffRowsRenderContext<'a> {
     pub file: &'a PullRequestDiffFile,

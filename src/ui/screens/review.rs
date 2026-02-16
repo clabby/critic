@@ -1,20 +1,26 @@
 //! Review screen renderer with tabs for threads and diffs.
 
-use crate::app::state::{PendingReviewCommentDraft, ReviewScreenState, ReviewTab};
-use crate::domain::{CommentRef, ListNodeKind, PullRequestDiffFileStatus};
-use crate::render::markdown::MarkdownRenderer;
-use crate::render::thread::{
-    render_issue_preview, render_review_summary_preview, render_thread_preview,
+use crate::{
+    app::state::{PendingReviewCommentDraft, ReviewScreenState, ReviewTab},
+    domain::{CommentRef, ListNodeKind, PullRequestDiffFileStatus},
+    render::{
+        markdown::MarkdownRenderer,
+        thread::{render_issue_preview, render_review_summary_preview, render_thread_preview},
+    },
+    ui::{
+        components::shared::short_preview,
+        screens::review_diff::{self, DiffRowsRenderContext},
+        theme,
+    },
 };
-use crate::ui::components::shared::short_preview;
-use crate::ui::screens::review_diff::{self, DiffRowsRenderContext};
-use crate::ui::theme;
-use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{
-    Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
-    ScrollbarState, Wrap,
+use ratatui::{
+    Frame,
+    layout::{Constraint, Layout, Rect},
+    text::{Line, Span},
+    widgets::{
+        Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
+        ScrollbarState, Wrap,
+    },
 };
 use std::collections::HashMap;
 

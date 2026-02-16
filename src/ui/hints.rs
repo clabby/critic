@@ -1,7 +1,9 @@
 //! Footer hint composition for each route and interaction mode.
 
-use crate::app::state::{AppState, ReviewScreenState, ReviewTab};
-use crate::domain::{CommentRef, ListNodeKind, Route};
+use crate::{
+    app::state::{AppState, ReviewScreenState, ReviewTab},
+    domain::{CommentRef, ListNodeKind, Route},
+};
 
 pub fn build(state: &AppState) -> String {
     match state.route {

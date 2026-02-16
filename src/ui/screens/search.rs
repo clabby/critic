@@ -1,16 +1,19 @@
 //! Pull request fuzzy-search screen renderer.
 
-use crate::app::state::AppState;
-use crate::domain::PullRequestReviewStatus;
-use crate::ui::components::shared::short_timestamp;
-use crate::ui::theme;
-use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::Style;
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{
-    Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
-    ScrollbarState,
+use crate::{
+    app::state::AppState,
+    domain::PullRequestReviewStatus,
+    ui::{components::shared::short_timestamp, theme},
+};
+use ratatui::{
+    Frame,
+    layout::{Constraint, Layout, Rect},
+    style::Style,
+    text::{Line, Span},
+    widgets::{
+        Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
+        ScrollbarState,
+    },
 };
 
 pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState) {

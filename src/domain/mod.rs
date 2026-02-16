@@ -29,11 +29,6 @@ impl PullRequestSummary {
             self.number, self.title, self.author, self.head_ref, self.base_ref
         )
     }
-
-    /// Returns a compact UI label.
-    pub fn display_line(&self) -> String {
-        format!("#{} {} (@{})", self.number, self.title, self.author)
-    }
 }
 
 /// Aggregate review state shown on the search list.
@@ -61,16 +56,6 @@ pub struct ReviewThread {
     pub replies: Vec<ReviewThread>,
 }
 
-impl ReviewThread {
-    pub fn total_comments(&self) -> usize {
-        1 + self
-            .replies
-            .iter()
-            .map(ReviewThread::total_comments)
-            .sum::<usize>()
-    }
-}
-
 /// A merged comment entry shown in the left pane.
 #[derive(Debug, Clone)]
 pub enum PullRequestComment {
@@ -82,9 +67,6 @@ pub enum PullRequestComment {
 /// All review data required for the review screen.
 #[derive(Debug, Clone)]
 pub struct PullRequestData {
-    pub owner: String,
-    pub repo: String,
-    pub pull_number: u64,
     pub head_ref: String,
     pub base_ref: String,
     pub head_sha: String,

@@ -1,12 +1,15 @@
 //! Fenced code highlighting via `tui-syntax-highlight` + `syntect`.
 
-use crate::ui::theme;
-use crate::ui::theme::ThemeMode;
-use ratatui::style::Color;
-use ratatui::text::{Line, Span};
-use syntect::highlighting::ThemeSet;
-use syntect::parsing::{SyntaxReference, SyntaxSet};
-use syntect::util::LinesWithEndings;
+use crate::ui::{theme, theme::ThemeMode};
+use ratatui::{
+    style::Color,
+    text::{Line, Span},
+};
+use syntect::{
+    highlighting::ThemeSet,
+    parsing::{SyntaxReference, SyntaxSet},
+    util::LinesWithEndings,
+};
 use tui_syntax_highlight::Highlighter;
 
 const OCEAN_DARK_THEME: &str = "base16-ocean.dark";
@@ -50,12 +53,6 @@ impl SyntaxHighlighter {
     /// Highlights a fenced code block using a best-effort language lookup.
     pub fn highlight(&self, lang: &str, source: &str) -> Vec<Line<'static>> {
         let syntax = resolve_syntax(&self.syntax_set, lang);
-        self.highlight_with_syntax(source, syntax)
-    }
-
-    /// Highlights source using file extension/name lookup.
-    pub fn highlight_for_path(&self, path: &str, source: &str) -> Vec<Line<'static>> {
-        let syntax = resolve_syntax_for_path(&self.syntax_set, path);
         self.highlight_with_syntax(source, syntax)
     }
 

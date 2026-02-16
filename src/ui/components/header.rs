@@ -1,10 +1,12 @@
 //! Header component shared by search and review screens.
 
 use crate::ui::theme;
-use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Gauge, Paragraph};
+use ratatui::{
+    Frame,
+    layout::{Alignment, Constraint, Layout, Rect},
+    text::{Line, Span},
+    widgets::{Block, Borders, Gauge, Paragraph},
+};
 
 /// Header payload consumed by the renderer.
 #[derive(Debug, Clone)]

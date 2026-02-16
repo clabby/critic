@@ -4,10 +4,11 @@ use crate::ui::theme::{ThemeMode, ThemePalette};
 use anyhow::{Context, Result, anyhow};
 use dark_light::Mode;
 use serde::{Deserialize, Serialize};
-use std::env;
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 const CONFIG_DIR: &str = ".critic";
 const CONFIG_FILE: &str = "config.toml";
@@ -197,14 +198,6 @@ pub fn detect_terminal_theme_sample() -> Option<TerminalThemeSample> {
         .or_else(|| detect_with_termbg_sample(Duration::from_millis(120)))
 }
 
-/// Detects terminal background mode without active terminal probes.
-///
-/// This avoids writing query sequences or competing for stdin reads while the
-/// TUI event loop is running.
-pub fn detect_terminal_theme_mode_passive() -> Option<ThemeMode> {
-    detect_terminal_theme_sample_passive().map(|sample| sample.mode)
-}
-
 /// Passive terminal theme detection without active OSC probes.
 pub fn detect_terminal_theme_sample_passive() -> Option<TerminalThemeSample> {
     detect_from_term_background_env()
@@ -214,12 +207,6 @@ pub fn detect_terminal_theme_sample_passive() -> Option<TerminalThemeSample> {
         })
         .or_else(detect_from_colorfgbg_sample)
         .or_else(detect_from_system_theme_sample)
-}
-
-/// Detects terminal background mode with a bounded live probe suitable for
-/// runtime polling while in TUI mode.
-pub fn detect_terminal_theme_mode_live(timeout: Duration) -> Option<ThemeMode> {
-    detect_terminal_theme_sample_live(timeout).map(|sample| sample.mode)
 }
 
 /// Runtime-safe terminal theme detection that can include terminal background RGB.
@@ -235,11 +222,6 @@ pub fn detect_terminal_background_rgb() -> Option<(u8, u8, u8)> {
             detect_with_termbg_sample(Duration::from_millis(120))
                 .and_then(|sample| sample.background_rgb)
         })
-}
-
-/// Runtime-safe terminal background RGB detection.
-pub fn detect_terminal_background_rgb_live(_timeout: Duration) -> Option<(u8, u8, u8)> {
-    detect_from_colorfgbg_sample().and_then(|sample| sample.background_rgb)
 }
 
 fn detect_with_termbg_sample(timeout: Duration) -> Option<TerminalThemeSample> {

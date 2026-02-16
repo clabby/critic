@@ -1,150 +1,184 @@
 # critic
 
-Terminal UI for browsing GitHub pull request review threads.
+`critic` is a terminal-first GitHub pull request review client.
+
+It is built for people who want to stay in a TUI while doing real code review work: scanning open PRs, reading and replying to threads, reviewing diffs with syntax highlighting, and submitting full reviews (comment/approve/request-changes) with inline comments.
+
+<p align="center">
+  <img src="assets/diff.png" alt="critic" />
+</p>
 
 ## Features
 
-- Authenticated GitHub client via `gh auth token` + `secrecy`.
-- Search screen with fuzzy finding across open pull requests.
-- Search screen review badges: `✅` approved, `❌` changes requested.
-- Review screen with split panes:
-  - Left: comment/thread navigator.
-  - Right: rendered thread preview (markdown + syntax-highlighted code blocks via `tui-syntax-highlight`).
-- Review screen tabs:
-  - `Threads`: existing review thread workflow.
-  - `Diff`: 25% file tree + 75% aligned side-by-side PR diff powered by `difft`, with syntax highlighting.
-- Review mutations:
-  - Reply to review threads.
-  - Resolve/unresolve threads.
-  - Submit pull request review as comment/approve/request-changes.
-- Outdated comment indicator for threads without a valid source location.
-- Operation spinner in the header with active async task label.
-- Optional debug modes behind the `harness` cargo feature:
-  - `--harness-dump` non-interactive frame dump mode.
+- Authenticate with GitHub using your existing `gh` login (`gh auth token`).
+- Fuzzy-find open pull requests.
+- Navigate review threads and issue comments in a split-pane review UI.
+- Render markdown in thread previews, including lists, emphasis, inline code, and fenced code blocks.
+- Review PR diffs with `difft` aligned output, syntax highlighting, hunk navigation, and file tree navigation.
+- Leave pending inline diff comments and submit them in a review batch.
+- Persist in-progress draft review comments to disk so interrupted sessions can recover.
+- Open the active PR/comment directly in the browser when needed.
+- Auto-create and manage `~/.critic/config.toml` (`critic config --path`, `critic config --edit`).
 
-## Requirements
+## Installation
 
-- Rust toolchain
-- GitHub CLI authenticated (`gh auth login`)
-- Git CLI
-- `difft` (difftastic) in `PATH`
+### Dependencies
 
-## Run
+- `gh` (GitHub CLI): used for authentication.
+- `difft` (difftastic, with aligned lines): used for diff rendering.
 
-```bash
-cargo run
+> [!WARNING]
+>
+> This tool requires difftastic with `aligned_lines` support in JSON output. This feature is available in
+> `main`, though hasn't yet landed in a release.
+>
+> To build `difftastic` from source:
+> ```sh
+> # Clone with 'jj'
+> jj git clone git@github.com:Wilfred/difftastic.git --colocate
+>
+> # Or, clone with 'git'
+> git clone git@github.com:Wilfred/difftastic.git
+>
+> # Install 'difft' with the 'aligned_lines' feature
+> cd difftastic && cargo install --path .
+> ```
+
+### Install From Source
+
+```sh
+cargo install critic
 ```
 
-Optional explicit repository:
+If you are installing from a local checkout instead of crates.io:
 
-```bash
-cargo run -- --owner <owner> --repo <repo>
+```sh
+cargo install --path .
 ```
 
-Open a specific pull request directly (bypasses search on success):
+### Install Pre-Built Binary
 
-```bash
-cargo run -- --pull <number>
+With `cargo-binstall`:
+
+```sh
+cargo binstall critic
 ```
 
-You can combine it with `--owner/--repo`:
+Manual download:
 
-```bash
-cargo run -- --owner <owner> --repo <repo> --pull <number>
-```
+1. Open the latest GitHub release.
+2. Download the archive for your target platform.
+3. Extract and place the `critic` binary on your `PATH`.
 
-If the pull request does not exist, the app shows an inline error and falls back to the search screen.
+## Screens
 
-Config utilities:
+### PR Search
 
-```bash
-cargo run -- config --path
-cargo run -- config --edit
-```
+Use this screen to fuzzy-filter open pull requests and choose one to review.
 
-## Configuration
+<p align="center">
+  <img src="assets/search.png" alt="critic-search" />
+</p>
 
-On startup, `critic` loads `~/.critic/config.toml`. If the file does not exist, it is created automatically with defaults.
+| Key | Action |
+| --- | --- |
+| `j` / `k` / `up` / `down` | Move selection |
+| `enter` | Open selected pull request |
+| `W` | Open selected pull request in browser |
+| `s` | Focus search input |
+| `R` | Refresh open pull request list |
+| `q` | Quit |
 
-Theme selection is configurable under `[theme]`:
+When search input is focused:
 
-```toml
-[theme]
-mode = "auto" # auto | dark | light
-```
+| Key | Action |
+| --- | --- |
+| `type` | Edit query |
+| `backspace` | Delete previous character |
+| `enter` / `esc` | Unfocus search input |
 
-`critic` derives UI colors from terminal ANSI colors instead of custom per-field palette overrides.
-When `theme.mode = "auto"`, `critic` uses terminal background detection and falls back to dark mode if detection is unavailable.
+### PR Review
 
-Syntax highlighting is fixed to Ocean themes and follows the active mode:
-- dark mode: `base16-ocean.dark`
-- light mode: `base16-ocean.light`
+#### Comment Tab
 
-## Visual Harness
+Use this tab for conversational review: read threads, inspect context, reply, and resolve/unresolve review threads.
 
-Render deterministic search/review frames to stdout (feature-gated):
+<p align="center">
+  <img src="assets/review_threads.png" alt="critic-review" />
+</p>
 
-```bash
-cargo run --features harness -- --harness-dump --harness-width 140 --harness-height 44
-```
+| Key | Action |
+| --- | --- |
+| `S-tab` | Show Diff tab |
+| `j` / `k` / `up` / `down` | Move selection |
+| `C-d` / `C-u` | Scroll paragraph |
+| `o` / `z` | Collapse/expand selected thread group |
+| `W` | Open selected comment in browser |
+| `f` | Show/hide resolved threads |
+| `t` | Resolve/unresolve selected thread |
+| `e` | Edit staged reply |
+| `s` | Send staged reply |
+| `x` | Clear staged reply |
+| `C` / `A` / `X` | Submit review (comment / approve / request changes) |
+| `b` | Back to PR search |
+| `R` | Refresh PR data |
+| `q` | Quit |
 
-This is useful for fast visual checks in CI or local iteration without opening the interactive TUI.
+#### Diff Review Tab
 
-## Keybindings
+Use this tab for code-level review: browse changed files, move by hunk, create/edit/delete pending inline comments, and submit a review batch.
 
-### Search Screen
+Screenshot placeholders:
 
-- `j`/`k` or arrow keys: move selection
-- `s`: focus search input
-- `Enter`/`Esc`: unfocus search input
-- `type` + `Backspace`: edit fuzzy query (while focused)
-- `Enter`: open selected pull request
-- `R`: refresh open pull request list
-- `q`: quit
+<p align="center">
+  <img src="assets/diff.png" alt="critic-diff" />
+</p>
 
-### Review Screen
+General diff navigation:
 
-- `Tab` / `Shift+Tab`: switch between `Threads` and `Diff` tabs
-- `j`/`k` or arrow keys: move selection
-- `o` or `z`: collapse/expand selected thread root
-- `t`: resolve/unresolve selected thread
-- `f`: show/hide resolved threads
-- `e`: edit pending reply for selected thread
-- `s`: send staged pending reply
-- `x`: clear pending reply
-- `C`: open editor and submit review comment
-- `A`: open editor and submit approval
-- `X`: open editor and submit request changes
-- `Esc`: back to search
-- `PageDown`/`PageUp`: scroll right preview pane
-- `n` / `N` (or `]` / `[`): next/previous diff hunk (Diff tab)
-- `o` / `z`: collapse/expand selected directory (Diff tab)
-- `R`: refresh comments for current pull request (Threads tab) or refresh diff (Diff tab)
-- `b`: back to search
-- `q`: quit
+| Key | Action |
+| --- | --- |
+| `S-tab` | Show Threads tab |
+| `tab` | Toggle focus between file tree and diff pane |
+| `j` / `k` / `up` / `down` | Move selection in focused pane |
+| `n` / `N` or `]` / `[` | Next/previous hunk |
+| `p` / `P` | Next/previous pending inline comment |
+| `q` | Quit |
 
-Note: `--harness-dump` is only available when the `harness` feature is enabled.
-Interactive compose uses external editor fallback order: `$VISUAL`, `$EDITOR`, `nvim`, `vim`, `vi`.
+When diff pane is focused:
 
-## Testing
+| Key | Action |
+| --- | --- |
+| `C-d` / `C-u` | Scroll paragraph |
+| `v` | Start/stop visual range selection (restricted to valid hunk range) |
+| `esc` | Cancel visual selection |
+| `e` | Leave/edit pending inline comment |
+| `x` | Delete pending inline comment (when on an existing pending range) |
+| `C` / `A` / `X` | Submit review (comment / approve / request changes) |
+| `b` | Back to PR search |
+| `R` | Refresh PR data |
 
-```bash
-cargo check
-cargo test
-```
+When file tree is focused:
 
-## Module Layout
+| Key | Action |
+| --- | --- |
+| `s` | Focus file search |
+| `o` / `z` | Collapse/expand directory |
 
-- `src/github/client.rs`: authenticated Octocrab client (`gh auth token`)
-- `src/config.rs`: config loader + default `~/.critic/config.toml` bootstrap
-- `src/github/pulls.rs`: repository resolution + open PR fetching
-- `src/github/comments.rs`: issue/review comments fetch + thread organization + resolution state
-- `src/github/diff.rs`: local repo sync + difft JSON parsing + aligned per-file diff payload
-- `src/search/fuzzy.rs`: fuzzy ranking via `fuzzy-matcher`
-- `src/render/markdown.rs`: markdown renderer
-- `src/render/syntax.rs`: `tui-syntax-highlight` code block highlighting
-- `src/ui/components/*`: shared/header components
-- `src/ui/screens/search.rs`: PR search screen
-- `src/ui/screens/review.rs`: split-pane review screen
-- `src/harness/mod.rs`: deterministic frame dump harness
-- `src/harness/fixtures.rs`: harness-only deterministic fixture data
+When file search is focused:
+
+| Key | Action |
+| --- | --- |
+| `type` | Edit file filter query |
+| `backspace` | Delete previous character |
+| `enter` / `esc` | Unfocus file search |
+
+## License
+
+See [`LICENSE.md`](./LICENSE.md)
+
+## Slop Disclaimer
+
+This tool was largely written with LLM assistance. It is useful in practice, but it may contain bugs, rough edges, odd code, or missing validations.
+
+If you hit one, please open an issue with reproduction steps (or better, a patch).

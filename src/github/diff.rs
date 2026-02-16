@@ -1,20 +1,24 @@
 //! Pull request diff loading via local git clone + `difft --display json`.
 
-use crate::domain::{
-    PullRequestDiffData, PullRequestDiffFile, PullRequestDiffFileStatus,
-    PullRequestDiffHighlightRange, PullRequestDiffRow, PullRequestDiffRowKind, PullRequestSummary,
+use crate::{
+    domain::{
+        PullRequestDiffData, PullRequestDiffFile, PullRequestDiffFileStatus,
+        PullRequestDiffHighlightRange, PullRequestDiffRow, PullRequestDiffRowKind,
+        PullRequestSummary,
+    },
+    github::client::gh_auth_token,
 };
-use crate::github::client::gh_auth_token;
 use secrecy::ExposeSecret;
 use serde::Deserialize;
-use std::collections::{HashMap, HashSet};
-use std::env;
-use std::path::{Component, Path, PathBuf};
-use std::process::Stdio;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    collections::{HashMap, HashSet},
+    env,
+    path::{Component, Path, PathBuf},
+    process::Stdio,
+    time::{SystemTime, UNIX_EPOCH},
+};
 use thiserror::Error;
-use tokio::fs;
-use tokio::process::Command;
+use tokio::{fs, process::Command};
 
 /// Result type for pull request diff loading.
 pub type Result<T> = std::result::Result<T, PullRequestDiffError>;

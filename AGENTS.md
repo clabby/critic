@@ -53,18 +53,6 @@ This file defines engineering practices for contributors and coding agents worki
 
 - Live mode: `cargo run`
 
-### Harness verification (feature-gated)
-
-- Build and run harness dump:
-  - `cargo run --features harness -- --harness-dump --harness-width 140 --harness-height 44`
-- Use harness output to verify header text, list formatting, and preview rendering deterministically.
-
-## Feature gating policy
-
-- Keep debugging-only tooling behind explicit cargo features.
-- `harness` is optional and should not be required for normal user builds.
-- New debug-only CLI flags should be gated under `harness` (or another explicit feature).
-
 ## Change discipline
 
 - Keep diffs focused and minimal.

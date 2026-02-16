@@ -1,13 +1,18 @@
 //! Top-level UI composition.
 
-use crate::app::state::AppState;
-use crate::app::state::ReviewTab;
-use crate::domain::Route;
-use crate::render::markdown::MarkdownRenderer;
-use crate::ui::components::footer;
-use crate::ui::components::header::{self, HeaderModel, HeaderTabs, ReviewProgress};
-use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout};
+use crate::{
+    app::state::{AppState, ReviewTab},
+    domain::Route,
+    render::markdown::MarkdownRenderer,
+    ui::components::{
+        footer,
+        header::{self, HeaderModel, HeaderTabs, ReviewProgress},
+    },
+};
+use ratatui::{
+    Frame,
+    layout::{Constraint, Layout},
+};
 
 pub mod components;
 mod hints;

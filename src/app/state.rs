@@ -3,13 +3,17 @@
 mod diff_tree;
 mod thread_nodes;
 
-use self::diff_tree::{build_diff_tree_rows, filter_diff_tree_rows};
-use self::thread_nodes::{append_thread_nodes, is_review_group_key, review_group_key, thread_key};
-use crate::domain::{
-    CommentRef, ListNode, ListNodeKind, PullRequestComment, PullRequestData, PullRequestDiffData,
-    PullRequestDiffFile, PullRequestSummary, ReviewThread, Route,
+use self::{
+    diff_tree::{build_diff_tree_rows, filter_diff_tree_rows},
+    thread_nodes::{append_thread_nodes, is_review_group_key, review_group_key, thread_key},
 };
-use crate::search::fuzzy::rank_pull_requests;
+use crate::{
+    domain::{
+        CommentRef, ListNode, ListNodeKind, PullRequestComment, PullRequestData,
+        PullRequestDiffData, PullRequestDiffFile, PullRequestSummary, ReviewThread, Route,
+    },
+    search::fuzzy::rank_pull_requests,
+};
 use std::collections::{HashMap, HashSet};
 
 /// Spinner frames used for active async operations.
@@ -625,10 +629,6 @@ impl ReviewScreenState {
         };
     }
 
-    pub fn prev_tab(&mut self) {
-        self.next_tab();
-    }
-
     pub fn selected_diff_file(&self) -> Option<&PullRequestDiffFile> {
         let diff = self.diff.as_ref()?;
         diff.files.get(self.selected_diff_file)
@@ -978,23 +978,6 @@ impl ReviewScreenState {
             return false;
         };
         !pending_comment_matches_current_diff(diff, comment)
-    }
-
-    pub fn pending_review_comments_for_row(
-        &self,
-        file: &PullRequestDiffFile,
-        row_index: usize,
-    ) -> Vec<&PendingReviewCommentDraft> {
-        self.pending_review_comments
-            .iter()
-            .filter(|comment| comment.path == file.path)
-            .filter(|comment| {
-                let Some(line) = row_line_for_side(&file.rows[row_index], comment.side) else {
-                    return false;
-                };
-                pending_comment_contains_line(comment, line as u64)
-            })
-            .collect()
     }
 
     pub fn pending_review_comments_for_file(
@@ -1881,9 +1864,6 @@ mod tests {
         };
 
         let data = PullRequestData {
-            owner: "owner".to_owned(),
-            repo: "repo".to_owned(),
-            pull_number: 42,
             head_ref: "feature".to_owned(),
             base_ref: "main".to_owned(),
             head_sha: "headsha".to_owned(),

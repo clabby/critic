@@ -1,10 +1,12 @@
 //! Footer component used for keybinding hints.
 
 use crate::ui::theme;
-use ratatui::Frame;
-use ratatui::layout::{Alignment, Rect};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::{
+    Frame,
+    layout::{Alignment, Rect},
+    text::{Line, Span},
+    widgets::Paragraph,
+};
 
 /// Returns the footer height required to render all hint tokens for the given terminal width.
 pub fn required_height(screen_width: u16, hints: &str) -> u16 {

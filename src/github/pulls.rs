@@ -1,7 +1,9 @@
 //! Open pull request discovery and mapping for the search screen.
 
-use crate::domain::{PullRequestReviewStatus, PullRequestSummary};
-use crate::github::errors::format_octocrab_error;
+use crate::{
+    domain::{PullRequestReviewStatus, PullRequestSummary},
+    github::errors::format_octocrab_error,
+};
 use serde::Deserialize;
 use std::collections::HashMap;
 use thiserror::Error;

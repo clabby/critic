@@ -1,8 +1,7 @@
 //! Fuzzy matching helpers for pull request search.
 
 use crate::domain::PullRequestSummary;
-use fuzzy_matcher::FuzzyMatcher;
-use fuzzy_matcher::skim::SkimMatcherV2;
+use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
 
 /// A ranked fuzzy search result.
 #[derive(Debug, Clone, Copy)]

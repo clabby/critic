@@ -1,7 +1,9 @@
 //! Browser launch helper for opening GitHub URLs from keybindings.
 
-use std::io;
-use std::process::{Command, Stdio};
+use std::{
+    io,
+    process::{Command, Stdio},
+};
 
 /// Opens a URL with the system default browser.
 pub fn open_in_browser(url: &str) -> io::Result<()> {

@@ -1,10 +1,18 @@
+#![doc = include_str!("../README.md")]
+
+mod app;
+mod config;
+mod domain;
+mod github;
+mod render;
+mod search;
+mod ui;
+
+use crate::{
+    app::{AppConfig, editor},
+    ui::theme,
+};
 use clap::{ArgGroup, Args, Parser, Subcommand};
-use critic::app::editor;
-use critic::app::{self, AppConfig};
-use critic::config;
-#[cfg(feature = "harness")]
-use critic::harness;
-use critic::ui::theme;
 
 /// Terminal UI for GitHub pull-request review thread browsing.
 #[derive(Debug, Parser)]
@@ -24,21 +32,6 @@ struct Cli {
     /// Pull request number to open directly on startup.
     #[arg(long)]
     pull: Option<u64>,
-
-    /// Render deterministic frames to stdout without entering interactive mode.
-    #[cfg(feature = "harness")]
-    #[arg(long, default_value_t = false)]
-    harness_dump: bool,
-
-    /// Harness frame width.
-    #[cfg(feature = "harness")]
-    #[arg(long, default_value_t = 140)]
-    harness_width: u16,
-
-    /// Harness frame height.
-    #[cfg(feature = "harness")]
-    #[arg(long, default_value_t = 44)]
-    harness_height: u16,
 }
 
 #[derive(Debug, Subcommand)]
@@ -81,14 +74,7 @@ async fn main() -> anyhow::Result<()> {
         terminal_background,
     );
 
-    #[cfg(feature = "harness")]
-    if cli.harness_dump {
-        let dump = harness::render_demo_dump(cli.harness_width, cli.harness_height)?;
-        println!("{dump}");
-        return Ok(());
-    }
-
-    app::run(AppConfig {
+    crate::app::run(AppConfig {
         owner: cli.owner,
         repo: cli.repo,
         pull: cli.pull,

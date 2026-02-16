@@ -6,34 +6,39 @@ pub mod editor;
 pub mod events;
 pub mod state;
 
-use crate::app::drafts::{DraftStore, LoadOutcome};
-use crate::app::events::{
-    MutationRequest, WorkerMessage, spawn_apply_mutation, spawn_load_pull_request_data,
-    spawn_load_pull_request_diff, spawn_load_pull_requests, spawn_load_specific_pull_request,
+use crate::{
+    app::{
+        drafts::{DraftStore, LoadOutcome},
+        events::{
+            MutationRequest, WorkerMessage, spawn_apply_mutation, spawn_load_pull_request_data,
+            spawn_load_pull_request_diff, spawn_load_pull_requests,
+            spawn_load_specific_pull_request,
+        },
+        state::{AppState, PendingReviewCommentSide, ReviewSubmissionEvent, ReviewTab},
+    },
+    config,
+    domain::{CommentRef, PullRequestSummary, Route},
+    github::{client::create_client, comments::SubmitReviewComment},
+    render::markdown::MarkdownRenderer,
+    ui,
+    ui::theme::{self, ThemeMode},
 };
-use crate::app::state::{AppState, PendingReviewCommentSide, ReviewSubmissionEvent, ReviewTab};
-use crate::config;
-use crate::domain::{CommentRef, PullRequestSummary, Route};
-use crate::github::client::create_client;
-use crate::github::comments::SubmitReviewComment;
-use crate::render::markdown::MarkdownRenderer;
-use crate::ui;
-use crate::ui::theme::{self, ThemeMode};
 use anyhow::Context;
 use browser::open_in_browser;
-use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers, MouseEvent, MouseEventKind,
-};
-use crossterm::execute;
-use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+use crossterm::{
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+        KeyModifiers, MouseEvent, MouseEventKind,
+    },
+    execute,
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use octocrab::models::pulls;
-use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
-use std::io::{Stdout, stdout};
-use std::time::{Duration, Instant};
+use ratatui::{Terminal, backend::CrosstermBackend};
+use std::{
+    io::{Stdout, stdout},
+    time::{Duration, Instant},
+};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 type WorkerTx = UnboundedSender<WorkerMessage>;
@@ -284,7 +289,6 @@ fn process_worker_message(
                             Ok(LoadOutcome::Loaded {
                                 pending_comments,
                                 reply_drafts,
-                                saved_head_sha: _,
                             }) => {
                                 review.apply_restored_drafts(pending_comments, reply_drafts);
                             }

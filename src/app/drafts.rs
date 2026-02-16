@@ -3,11 +3,7 @@
 use crate::app::state::{PendingReviewCommentDraft, PendingReviewCommentSide, ReviewScreenState};
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::env;
-use std::fmt::Write;
-use std::fs;
-use std::path::PathBuf;
+use std::{collections::HashMap, env, fmt::Write, fs, path::PathBuf};
 
 const CONFIG_DIR: &str = ".critic";
 const DRAFTS_DIR: &str = "drafts";
@@ -26,7 +22,6 @@ pub enum LoadOutcome {
     Loaded {
         pending_comments: Vec<PendingReviewCommentDraft>,
         reply_drafts: HashMap<String, String>,
-        saved_head_sha: Option<String>,
     },
 }
 
@@ -58,9 +53,6 @@ impl DraftStore {
             return Ok(LoadOutcome::None);
         }
 
-        let saved_head_sha =
-            (persisted.head_sha != review.pull.head_sha).then_some(persisted.head_sha.clone());
-
         Ok(LoadOutcome::Loaded {
             pending_comments: persisted
                 .pending_review_comments
@@ -68,7 +60,6 @@ impl DraftStore {
                 .map(PendingReviewCommentDraft::from)
                 .collect(),
             reply_drafts: persisted.reply_drafts,
-            saved_head_sha,
         })
     }
 

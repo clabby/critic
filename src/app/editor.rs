@@ -1,20 +1,23 @@
 //! External editor integration for composing replies/review messages.
 
 use anyhow::{Context, Result, anyhow};
-use crossterm::cursor::MoveTo;
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
-use crossterm::execute;
-use crossterm::terminal::{
-    Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+use crossterm::{
+    cursor::MoveTo,
+    event::{DisableMouseCapture, EnableMouseCapture},
+    execute,
+    terminal::{
+        Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
+        enable_raw_mode,
+    },
 };
-use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
-use std::env;
-use std::fs;
-use std::io::{Stdout, stdout};
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use ratatui::{Terminal, backend::CrosstermBackend};
+use std::{
+    env, fs,
+    io::{Stdout, stdout},
+    path::{Path, PathBuf},
+    process::Command,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 /// Opens an external editor and returns the edited contents.
 ///

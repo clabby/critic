@@ -23,11 +23,3 @@ build *args='':
 # Run Rust tests
 test *args='':
   cargo nextest run --workspace --all --all-features $@
-
-# Print the demo TUI
-demo:
-  cargo run --features harness -- --demo
-
-# Run the harness dump
-harness *args='':
-  cargo run --features harness -- --harness-dump {{args}}

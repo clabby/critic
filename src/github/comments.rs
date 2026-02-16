@@ -1,13 +1,14 @@
 //! Pull request comment fetch and thread organization.
 
-use crate::domain::{
-    IssueComment, PullRequestComment, PullRequestData, PullRequestSummary, PullReviewSummary,
-    ReviewComment, ReviewThread,
+use crate::{
+    domain::{
+        IssueComment, PullRequestComment, PullRequestData, PullRequestSummary, PullReviewSummary,
+        ReviewComment, ReviewThread,
+    },
+    github::errors::format_octocrab_error,
 };
-use crate::github::errors::format_octocrab_error;
 use octocrab::models::{CommentId, pulls};
-use serde::Deserialize;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
@@ -204,9 +205,6 @@ pub async fn fetch_pull_request_data(
     merged.sort_by_key(|entry| entry.0);
 
     Ok(PullRequestData {
-        owner: pull.owner.clone(),
-        repo: pull.repo.clone(),
-        pull_number: pull.number,
         head_ref: pull_state.head.ref_field,
         base_ref: pull_state.base.ref_field,
         head_sha: pull_state.head.sha,

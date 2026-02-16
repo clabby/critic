@@ -1,13 +1,15 @@
 //! Background worker messages and async data-loading tasks.
 
-use crate::domain::{PullRequestData, PullRequestDiffData, PullRequestSummary};
-use crate::github::comments::{
-    SubmitPullRequestReviewRequest, SubmitReviewComment, fetch_pull_request_data,
-    reply_to_review_comment, set_review_thread_resolved, submit_pull_request_review,
-};
-use crate::github::diff::fetch_pull_request_diff_data;
-use crate::github::pulls::{
-    fetch_open_pull_requests, fetch_pull_request_summary, resolve_repository,
+use crate::{
+    domain::{PullRequestData, PullRequestDiffData, PullRequestSummary},
+    github::{
+        comments::{
+            SubmitPullRequestReviewRequest, SubmitReviewComment, fetch_pull_request_data,
+            reply_to_review_comment, set_review_thread_resolved, submit_pull_request_review,
+        },
+        diff::fetch_pull_request_diff_data,
+        pulls::{fetch_open_pull_requests, fetch_pull_request_summary, resolve_repository},
+    },
 };
 use tokio::sync::mpsc::UnboundedSender;
 

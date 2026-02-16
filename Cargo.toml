@@ -3,10 +3,6 @@ name = "critic"
 version = "0.1.0"
 edition = "2024"
 
-[features]
-default = []
-harness = []
-
 [dependencies]
 anyhow = "1.0"
 clap = { version = "4.5.58", features = ["derive"] }

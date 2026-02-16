@@ -1,11 +1,13 @@
 //! Right-pane renderers for review threads and issue comments.
 
-use crate::domain::{
-    CommentRef, IssueComment, ListNode, ListNodeKind, PullReviewSummary, ReviewComment,
-    ReviewThread, review_comment_is_outdated,
+use crate::{
+    domain::{
+        CommentRef, IssueComment, ListNode, ListNodeKind, PullReviewSummary, ReviewComment,
+        ReviewThread, review_comment_is_outdated,
+    },
+    render::markdown::MarkdownRenderer,
+    ui::theme,
 };
-use crate::render::markdown::MarkdownRenderer;
-use crate::ui::theme;
 use ratatui::text::{Line, Span};
 
 /// Renders the preview panel for a selected review thread node.

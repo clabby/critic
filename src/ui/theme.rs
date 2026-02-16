@@ -37,7 +37,6 @@ pub struct ThemePalette {
     pub gauge_label: Color,
     pub gauge_fill: Color,
     pub gauge_empty: Color,
-    pub code_padding_fg: Color,
 }
 
 impl Default for ThemePalette {
@@ -67,7 +66,6 @@ impl Default for ThemePalette {
             gauge_label: Color::Black,
             gauge_fill: Color::Cyan,
             gauge_empty: Color::DarkGray,
-            code_padding_fg: Color::Black,
         }
     }
 }
@@ -100,7 +98,6 @@ impl ThemePalette {
             gauge_label: Color::Black,
             gauge_fill: Color::Cyan,
             gauge_empty: Color::Gray,
-            code_padding_fg: Color::Black,
         }
     }
 }
@@ -146,12 +143,6 @@ pub fn apply(
             terminal_background_rgb,
         };
     }
-}
-
-/// Returns whether the currently active theme mode is light.
-pub fn is_light_mode() -> bool {
-    let guard = store().read().expect("theme lock poisoned");
-    guard.mode == ThemeMode::Light
 }
 
 pub fn blend_with_terminal_bg(overlay: Color, alpha: f32) -> Color {
@@ -336,8 +327,4 @@ pub fn gauge_fill() -> Style {
 
 pub fn gauge_empty() -> Style {
     with_palette(|theme| Style::default().fg(theme.gauge_label).bg(theme.gauge_empty))
-}
-
-pub fn code_padding() -> Style {
-    with_palette(|theme| Style::default().fg(theme.code_padding_fg))
 }

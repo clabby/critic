@@ -1,12 +1,15 @@
 //! Markdown rendering for the right pane preview.
 
-use crate::domain::PullRequestDiffFile;
-use crate::render::syntax::SyntaxHighlighter;
-use crate::ui::theme;
-use crate::ui::theme::ThemeMode;
+use crate::{
+    domain::PullRequestDiffFile,
+    render::syntax::SyntaxHighlighter,
+    ui::{theme, theme::ThemeMode},
+};
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::{
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+};
 use std::collections::HashMap;
 
 type SyntaxColorLine = Vec<Option<Color>>;
@@ -40,14 +43,6 @@ impl MarkdownRenderer {
 
     pub fn clear_diff_cache(&mut self) {
         self.diff_cache.clear();
-    }
-
-    pub fn set_syntax_theme(&mut self, name: &str) -> bool {
-        let changed = self.syntax.set_theme(name);
-        if changed {
-            self.diff_cache.clear();
-        }
-        changed
     }
 
     pub fn set_ocean_theme(&mut self, mode: ThemeMode) -> bool {
