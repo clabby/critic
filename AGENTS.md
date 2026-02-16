@@ -44,10 +44,21 @@ This file defines engineering practices for contributors and coding agents worki
 
 ## Debugging workflow
 
+### Command policy
+
+- Prefer `just` recipes over raw `cargo` commands.
+- Use raw `cargo` only when a needed workflow is not exposed in `justfile`.
+- Canonical commands:
+  - `just fmt-fix`
+  - `just fmt-check`
+  - `just lint`
+  - `just build`
+  - `just test`
+
 ### Fast compile/test cycle
 
-- `cargo check`
-- `cargo test`
+- `just build`
+- `just test`
 
 ### Interactive verification
 
