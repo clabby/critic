@@ -74,7 +74,7 @@ pub async fn run(config: AppConfig) -> anyhow::Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<WorkerMessage>();
 
     let mut state = AppState::default();
-    let draft_store = match DraftStore::new() {
+    let draft_store = match DraftStore::new().await {
         Ok(store) => Some(store),
         Err(err) => {
             state.error_message = Some(format!("draft persistence unavailable: {err}"));
@@ -123,13 +123,13 @@ pub async fn run(config: AppConfig) -> anyhow::Result<()> {
         markdown: &mut markdown,
         draft_store: draft_store.as_ref(),
     };
-    let result = run_event_loop(&mut terminal, &mut state, &mut deps);
+    let result = run_event_loop(&mut terminal, &mut state, &mut deps).await;
 
     restore_terminal(&mut terminal)?;
     result
 }
 
-fn run_event_loop(
+async fn run_event_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     state: &mut AppState,
     deps: &mut EventLoopDependencies<'_>,
@@ -154,11 +154,13 @@ fn run_event_loop(
                 deps.tx,
                 deps.draft_store,
                 &mut last_persisted_draft_signature,
-            );
+            )
+            .await;
             maybe_spawn_search_load(state, deps.context, deps.tx);
             load_active_diff_if_needed(state, deps.tx);
             // Persist immediately after worker-driven mutations (for example submit review).
-            persist_drafts_if_enabled(state, deps.draft_store, &mut last_persisted_draft_signature);
+            persist_drafts_if_enabled(state, deps.draft_store, &mut last_persisted_draft_signature)
+                .await;
         }
 
         if state.error_message != last_error_snapshot {
@@ -183,7 +185,8 @@ fn run_event_loop(
             );
         }
 
-        persist_drafts_if_enabled(state, deps.draft_store, &mut last_persisted_draft_signature);
+        persist_drafts_if_enabled(state, deps.draft_store, &mut last_persisted_draft_signature)
+            .await;
 
         terminal.draw(|frame| ui::render(frame, state, deps.markdown))?;
 
@@ -202,7 +205,8 @@ fn run_event_loop(
                             state,
                             deps.draft_store,
                             &mut last_persisted_draft_signature,
-                        );
+                        )
+                        .await;
                     }
                 }
                 Event::Mouse(mouse_event) => {
@@ -217,7 +221,7 @@ fn run_event_loop(
     Ok(())
 }
 
-fn persist_drafts_if_enabled(
+async fn persist_drafts_if_enabled(
     state: &mut AppState,
     draft_store: Option<&DraftStore>,
     last_persisted_draft_signature: &mut Option<String>,
@@ -225,10 +229,10 @@ fn persist_drafts_if_enabled(
     let Some(store) = draft_store else {
         return;
     };
-    persist_review_drafts(state, store, last_persisted_draft_signature);
+    persist_review_drafts(state, store, last_persisted_draft_signature).await;
 }
 
-fn process_worker_message(
+async fn process_worker_message(
     state: &mut AppState,
     message: WorkerMessage,
     markdown: &mut MarkdownRenderer,
@@ -285,7 +289,7 @@ fn process_worker_message(
 
                     state.open_review(pull, data);
                     if let (Some(store), Some(review)) = (draft_store, state.review.as_mut()) {
-                        match store.load_for_review(review) {
+                        match store.load_for_review(review).await {
                             Ok(LoadOutcome::Loaded {
                                 pending_comments,
                                 reply_drafts,
@@ -385,7 +389,7 @@ fn process_worker_message(
     }
 }
 
-fn persist_review_drafts(
+async fn persist_review_drafts(
     state: &mut AppState,
     draft_store: &DraftStore,
     last_persisted_draft_signature: &mut Option<String>,
@@ -402,7 +406,7 @@ fn persist_review_drafts(
         .any(|body| !body.trim().is_empty());
     if !has_pending && !has_replies {
         if last_persisted_draft_signature.is_some() {
-            if let Err(err) = draft_store.clear_for_review(review) {
+            if let Err(err) = draft_store.clear_for_review(review).await {
                 state.error_message = Some(format!("failed to clear saved draft: {err}"));
             }
             *last_persisted_draft_signature = None;
@@ -415,7 +419,7 @@ fn persist_review_drafts(
         return;
     }
 
-    if let Err(err) = draft_store.save_for_review(review) {
+    if let Err(err) = draft_store.save_for_review(review).await {
         state.error_message = Some(format!("failed to save draft: {err}"));
         return;
     }
@@ -438,7 +442,7 @@ fn maybe_refresh_theme(
         return;
     }
 
-    let detected = config::detect_terminal_theme_sample_live(Duration::from_millis(0));
+    let detected = config::detect_terminal_theme_sample_live(Duration::from_millis(20));
     let Some(detected) = detected else {
         return;
     };

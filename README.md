@@ -176,6 +176,6 @@ See [`LICENSE.md`](./LICENSE.md)
 
 ## Slop Disclaimer
 
-This tool was largely written with LLM assistance. It is useful in practice, but it may contain bugs, rough edges, odd code, or missing validations.
+The vast majority of this tool was written by Codex. It is useful in practice, but it may contain bugs, rough edges, odd code, or missing validations.
 
 If you hit one, please open an issue with reproduction steps (or better, a patch).

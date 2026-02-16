@@ -210,8 +210,12 @@ pub fn detect_terminal_theme_sample_passive() -> Option<TerminalThemeSample> {
 }
 
 /// Runtime-safe terminal theme detection that can include terminal background RGB.
-pub fn detect_terminal_theme_sample_live(_timeout: Duration) -> Option<TerminalThemeSample> {
-    detect_terminal_theme_sample_passive()
+pub fn detect_terminal_theme_sample_live(timeout: Duration) -> Option<TerminalThemeSample> {
+    if timeout.is_zero() {
+        return detect_terminal_theme_sample_passive();
+    }
+
+    detect_with_termbg_sample(timeout).or_else(detect_terminal_theme_sample_passive)
 }
 
 /// Detects terminal background RGB when available.
@@ -264,10 +268,10 @@ fn detect_from_term_background_env() -> Option<ThemeMode> {
 }
 
 fn detect_from_system_theme_sample() -> Option<TerminalThemeSample> {
-    let mode = match dark_light::detect() {
+    let mode = match dark_light::detect().ok()? {
         Mode::Dark => ThemeMode::Dark,
         Mode::Light => ThemeMode::Light,
-        Mode::Default => return None,
+        Mode::Unspecified => return None,
     };
 
     Some(TerminalThemeSample {

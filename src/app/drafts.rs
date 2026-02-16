@@ -3,7 +3,8 @@
 use crate::app::state::{PendingReviewCommentDraft, PendingReviewCommentSide, ReviewScreenState};
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, env, fmt::Write, fs, path::PathBuf};
+use std::{collections::HashMap, env, fmt::Write, path::PathBuf};
+use tokio::fs;
 
 const CONFIG_DIR: &str = ".critic";
 const DRAFTS_DIR: &str = "drafts";
@@ -26,28 +27,33 @@ pub enum LoadOutcome {
 }
 
 impl DraftStore {
-    pub fn new() -> Result<Self> {
+    pub async fn new() -> Result<Self> {
         let home =
             env::var_os("HOME").ok_or_else(|| anyhow!("HOME environment variable is not set"))?;
         let root = PathBuf::from(home).join(CONFIG_DIR).join(DRAFTS_DIR);
         fs::create_dir_all(&root)
+            .await
             .with_context(|| format!("failed to create draft directory {}", root.display()))?;
         Ok(Self { root })
     }
 
-    pub fn load_for_review(&self, review: &ReviewScreenState) -> Result<LoadOutcome> {
+    pub async fn load_for_review(&self, review: &ReviewScreenState) -> Result<LoadOutcome> {
         let path = self.file_path_for_review(review);
-        if !path.exists() {
+        if !fs::try_exists(&path)
+            .await
+            .with_context(|| format!("failed to check draft file {}", path.display()))?
+        {
             return Ok(LoadOutcome::None);
         }
 
         let raw = fs::read_to_string(&path)
+            .await
             .with_context(|| format!("failed to read draft file {}", path.display()))?;
         let persisted: PersistedReviewDraft = serde_json::from_str(&raw)
             .with_context(|| format!("failed to parse draft file {}", path.display()))?;
 
         if persisted.version != DRAFT_FORMAT_VERSION {
-            fs::remove_file(&path).with_context(|| {
+            fs::remove_file(&path).await.with_context(|| {
                 format!("failed to delete outdated draft file {}", path.display())
             })?;
             return Ok(LoadOutcome::None);
@@ -63,7 +69,7 @@ impl DraftStore {
         })
     }
 
-    pub fn save_for_review(&self, review: &ReviewScreenState) -> Result<()> {
+    pub async fn save_for_review(&self, review: &ReviewScreenState) -> Result<()> {
         let pending_review_comments = review
             .pending_review_comments()
             .iter()
@@ -86,16 +92,21 @@ impl DraftStore {
         let content =
             serde_json::to_string_pretty(&persisted).context("failed to serialize draft file")?;
         fs::write(&path, content)
+            .await
             .with_context(|| format!("failed to write draft file {}", path.display()))?;
         Ok(())
     }
 
-    pub fn clear_for_review(&self, review: &ReviewScreenState) -> Result<()> {
+    pub async fn clear_for_review(&self, review: &ReviewScreenState) -> Result<()> {
         let path = self.file_path_for_review(review);
-        if !path.exists() {
+        if !fs::try_exists(&path)
+            .await
+            .with_context(|| format!("failed to check draft file {}", path.display()))?
+        {
             return Ok(());
         }
         fs::remove_file(&path)
+            .await
             .with_context(|| format!("failed to delete draft file {}", path.display()))?;
         Ok(())
     }

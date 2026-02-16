@@ -83,20 +83,24 @@ fn run_editor(path: &Path) -> Result<()> {
 
     candidates.extend(["nvim".to_owned(), "vim".to_owned(), "vi".to_owned()]);
 
+    let mut last_error: Option<anyhow::Error> = None;
     for command in candidates {
-        let mut parts = command.split_whitespace();
-        let Some(program) = parts.next() else {
+        let Some(mut parts) = shlex::split(&command) else {
             continue;
         };
-        let args: Vec<String> = parts.map(|part| part.to_owned()).collect();
+        if parts.is_empty() {
+            continue;
+        }
+        let program = parts.remove(0);
+        let args = parts;
 
-        let status = Command::new(program).args(&args).arg(path).status();
+        let status = Command::new(&program).args(&args).arg(path).status();
         match status {
             Ok(status) => {
                 if status.success() {
                     return Ok(());
                 }
-                return Err(anyhow!(
+                last_error = Some(anyhow!(
                     "editor `{}` exited with status {}",
                     command,
                     status
@@ -104,14 +108,20 @@ fn run_editor(path: &Path) -> Result<()> {
                         .map(|code| code.to_string())
                         .unwrap_or_else(|| "unknown".to_owned())
                 ));
+                continue;
             }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                 continue;
             }
             Err(err) => {
-                return Err(anyhow!("failed to launch editor `{}`: {}", command, err));
+                last_error = Some(anyhow!("failed to launch editor `{}`: {}", command, err));
+                continue;
             }
         }
+    }
+
+    if let Some(err) = last_error {
+        return Err(err);
     }
 
     Err(anyhow!(

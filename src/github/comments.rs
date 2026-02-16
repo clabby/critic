@@ -78,8 +78,10 @@ struct GraphQlCommentNode {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct GraphQlReviewComments {
     nodes: Vec<GraphQlCommentNode>,
+    page_info: GraphQlPageInfo,
 }
 
 #[derive(Debug, Deserialize)]
@@ -138,10 +140,32 @@ query PullRequestReviewThreadResolution($owner: String!, $repo: String!, $pullNu
           id
           isResolved
           comments(first: 100) {
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
             nodes {
               databaseId
             }
           }
+        }
+      }
+    }
+  }
+}
+"#;
+
+const REVIEW_THREAD_COMMENTS_QUERY: &str = r#"
+query PullRequestReviewThreadComments($threadId: ID!, $after: String) {
+  node(id: $threadId) {
+    ... on PullRequestReviewThread {
+      comments(first: 100, after: $after) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          databaseId
         }
       }
     }
@@ -393,7 +417,7 @@ async fn list_review_comment_threads(
     let mut threads = build_review_threads(mapped);
     for thread in &mut threads {
         apply_thread_resolution(thread, &resolved_by_comment_id);
-        if thread.thread_id.is_none() {
+        if thread.thread_id.is_none() && thread.replies.is_empty() {
             set_thread_resolved_without_id(thread);
         }
     }
@@ -582,11 +606,26 @@ async fn review_thread_resolution_map(
         };
 
         for thread in &review_threads.nodes {
-            for comment in &thread.comments.nodes {
-                if let Some(comment_id) = comment.database_id {
-                    resolved_by_comment_id
-                        .insert(comment_id, (thread.is_resolved, thread.id.clone()));
-                }
+            let mut comment_ids = thread
+                .comments
+                .nodes
+                .iter()
+                .filter_map(|comment| comment.database_id)
+                .collect::<Vec<_>>();
+
+            if thread.comments.page_info.has_next_page {
+                comment_ids.extend(
+                    fetch_remaining_thread_comment_ids(
+                        client,
+                        &thread.id,
+                        thread.comments.page_info.end_cursor.clone(),
+                    )
+                    .await?,
+                );
+            }
+
+            for comment_id in comment_ids {
+                resolved_by_comment_id.insert(comment_id, (thread.is_resolved, thread.id.clone()));
             }
         }
 
@@ -598,6 +637,75 @@ async fn review_thread_resolution_map(
     }
 
     Ok(resolved_by_comment_id)
+}
+
+async fn fetch_remaining_thread_comment_ids(
+    client: &octocrab::Octocrab,
+    thread_id: &str,
+    mut after: Option<String>,
+) -> Result<Vec<u64>> {
+    let mut comment_ids = Vec::new();
+
+    while let Some(cursor) = after {
+        let response: serde_json::Value = client
+            .graphql(&serde_json::json!({
+                "query": REVIEW_THREAD_COMMENTS_QUERY,
+                "variables": {
+                    "threadId": thread_id,
+                    "after": cursor,
+                }
+            }))
+            .await?;
+
+        if let Some(errors) = response.get("errors").and_then(|value| value.as_array())
+            && !errors.is_empty()
+        {
+            let message = errors
+                .iter()
+                .filter_map(|value| value.get("message").and_then(|message| message.as_str()))
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(PullRequestCommentsError::GraphQlResponseError(message));
+        }
+
+        let comments = response
+            .get("data")
+            .and_then(|value| value.get("node"))
+            .and_then(|value| value.get("comments"))
+            .ok_or_else(|| {
+                PullRequestCommentsError::GraphQlResponseError(
+                    "missing review thread comments data in GraphQL response".to_owned(),
+                )
+            })?;
+
+        if let Some(nodes) = comments.get("nodes").and_then(|value| value.as_array()) {
+            comment_ids.extend(
+                nodes
+                    .iter()
+                    .filter_map(|node| node.get("databaseId").and_then(|id| id.as_u64())),
+            );
+        }
+
+        let page_info = comments.get("pageInfo").ok_or_else(|| {
+            PullRequestCommentsError::GraphQlResponseError(
+                "missing review thread comments page info in GraphQL response".to_owned(),
+            )
+        })?;
+        let has_next_page = page_info
+            .get("hasNextPage")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+        if has_next_page {
+            after = page_info
+                .get("endCursor")
+                .and_then(|value| value.as_str())
+                .map(str::to_owned);
+        } else {
+            break;
+        }
+    }
+
+    Ok(comment_ids)
 }
 
 async fn pull_request_file_paths(
