@@ -1,0 +1,65 @@
+# AGENTS.md
+
+This file defines engineering practices for contributors and coding agents working on `review-tui`.
+
+## Core principles
+
+- Keep behavior simple and predictable.
+- Keep modules focused and loosely coupled.
+- Surface clear, actionable errors to users.
+- Prioritize user trust: safe defaults, explicit state transitions, and no silent side effects.
+- Favor straightforward UX over clever interactions.
+
+## Code organization
+
+- Keep concerns separated:
+  - `src/github/*`: API/auth/mutations.
+  - `src/app/*`: event loop, state machine, async orchestration.
+  - `src/ui/*`: rendering and interaction views.
+  - `src/render/*`: markdown/syntax rendering.
+  - `src/search/*`: fuzzy matching.
+- Avoid large monolithic modules when behavior can be isolated.
+- Keep data models in `src/domain/*` stable and explicit.
+
+## Async and UX rules
+
+- Never block the UI loop on network work.
+- All GitHub mutations must refresh pull request data before UI settles.
+- Show operation state in the header spinner with descriptive labels.
+- On failure, preserve context and show a concise error message.
+
+## Error handling
+
+- Do not swallow errors.
+- Return typed errors from lower layers (`thiserror`) and user-facing context at boundaries.
+- Prefer specific messages (which operation failed and why) over generic failures.
+
+## Debugging workflow
+
+### Fast compile/test cycle
+
+- `cargo check`
+- `cargo test`
+
+### Interactive verification
+
+- Live mode: `cargo run`
+- Demo mode: `cargo run -- --demo`
+
+### Harness verification (feature-gated)
+
+- Build and run harness dump:
+  - `cargo run --features harness -- --harness-dump --harness-width 140 --harness-height 44`
+- Use harness output to verify header text, list formatting, and preview rendering deterministically.
+
+## Feature gating policy
+
+- Keep debugging-only tooling behind explicit cargo features.
+- `harness` is optional and should not be required for normal user builds.
+- New debug-only CLI flags should be gated under `harness` (or another explicit feature).
+
+## Change discipline
+
+- Keep diffs focused and minimal.
+- Update `README.md` when user-visible behavior or flags change.
+- Add or update tests for parser/state/aggregation logic when behavior changes.
