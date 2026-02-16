@@ -2,8 +2,6 @@
 
 pub mod app;
 pub mod domain;
-#[cfg(feature = "harness")]
-pub mod fixtures;
 pub mod github;
 #[cfg(feature = "harness")]
 pub mod harness;

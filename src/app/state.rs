@@ -18,11 +18,11 @@ pub struct AppState {
     pub error_message: Option<String>,
     pub repository_label: String,
     pub pull_requests: Vec<PullRequestSummary>,
+    pub search_focused: bool,
     pub search_query: String,
     pub search_results: Vec<usize>,
     pub search_selected: usize,
     pub review: Option<ReviewScreenState>,
-    pub input: Option<InputState>,
     operation: Option<OperationState>,
 }
 
@@ -34,11 +34,11 @@ impl Default for AppState {
             error_message: None,
             repository_label: "(resolving repository)".to_owned(),
             pull_requests: Vec::new(),
+            search_focused: false,
             search_query: String::new(),
             search_results: Vec::new(),
             search_selected: 0,
             review: None,
-            input: None,
             operation: None,
         }
     }
@@ -81,6 +81,18 @@ impl AppState {
         self.recompute_search();
     }
 
+    pub fn focus_search(&mut self) {
+        self.search_focused = true;
+    }
+
+    pub fn unfocus_search(&mut self) {
+        self.search_focused = false;
+    }
+
+    pub fn is_search_focused(&self) -> bool {
+        self.search_focused
+    }
+
     pub fn search_move_down(&mut self) {
         if self.search_results.is_empty() {
             self.search_selected = 0;
@@ -106,6 +118,7 @@ impl AppState {
 
     pub fn back_to_search(&mut self) {
         self.route = Route::Search;
+        self.search_focused = false;
     }
 
     pub fn begin_operation(&mut self, label: impl Into<String>) {
@@ -136,14 +149,6 @@ impl AppState {
             .copied()
             .unwrap_or('|');
         Some(format!("{frame} {}", operation.label))
-    }
-
-    pub fn begin_input(&mut self, input: InputState) {
-        self.input = Some(input);
-    }
-
-    pub fn cancel_input(&mut self) {
-        self.input = None;
     }
 }
 
@@ -176,43 +181,6 @@ impl ReviewSubmissionEvent {
             Self::Approve => "Submit Approval",
             Self::RequestChanges => "Request Changes",
         }
-    }
-}
-
-/// Input modal action.
-#[derive(Debug, Clone)]
-pub enum InputAction {
-    Reply {
-        root_key: String,
-        comment_id: u64,
-        pull: PullRequestSummary,
-    },
-    SubmitReview {
-        event: ReviewSubmissionEvent,
-        pull: PullRequestSummary,
-    },
-}
-
-/// Input modal state.
-#[derive(Debug, Clone)]
-pub struct InputState {
-    pub title: String,
-    pub prompt: String,
-    pub buffer: String,
-    pub action: InputAction,
-}
-
-impl InputState {
-    pub fn push_char(&mut self, ch: char) {
-        self.buffer.push(ch);
-    }
-
-    pub fn backspace(&mut self) {
-        self.buffer.pop();
-    }
-
-    pub fn trimmed(&self) -> String {
-        self.buffer.trim().to_owned()
     }
 }
 

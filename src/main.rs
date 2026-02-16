@@ -15,11 +15,6 @@ struct Cli {
     #[arg(long, requires = "owner")]
     repo: Option<String>,
 
-    /// Run with deterministic fixture data instead of GitHub API calls.
-    #[cfg(feature = "harness")]
-    #[arg(long, default_value_t = false)]
-    demo: bool,
-
     #[cfg(feature = "harness")]
     /// Render deterministic frames to stdout without entering interactive mode.
     #[arg(long, default_value_t = false)]
@@ -50,8 +45,6 @@ async fn main() -> anyhow::Result<()> {
     app::run(AppConfig {
         owner: cli.owner,
         repo: cli.repo,
-        #[cfg(feature = "harness")]
-        demo: cli.demo,
     })
     .await
 }

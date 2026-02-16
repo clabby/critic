@@ -44,7 +44,6 @@ This file defines engineering practices for contributors and coding agents worki
 ### Interactive verification
 
 - Live mode: `cargo run`
-- Demo mode: `cargo run -- --demo`
 
 ### Harness verification (feature-gated)
 

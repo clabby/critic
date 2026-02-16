@@ -10,7 +10,10 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
+    ScrollbarState, Wrap,
+};
 
 pub fn render(
     frame: &mut Frame<'_>,
@@ -160,10 +163,59 @@ fn render_right_pane(
         vec![Line::from("Select a row to preview comment details.")]
     };
 
-    let paragraph = Paragraph::new(lines)
-        .block(block)
-        .wrap(Wrap { trim: false })
-        .scroll((review.right_scroll, 0));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let (text_area, scrollbar_area) = if inner.width > 1 {
+        let sections = Layout::horizontal([Constraint::Min(1), Constraint::Length(1)]).split(inner);
+        (sections[0], Some(sections[1]))
+    } else {
+        (inner, None)
+    };
 
-    frame.render_widget(paragraph, area);
+    let viewport_height = usize::from(text_area.height);
+    let content_height = wrapped_content_height(&lines, text_area.width);
+    let max_scroll = content_height.saturating_sub(viewport_height);
+    let scroll = usize::from(review.right_scroll).min(max_scroll);
+
+    let paragraph = Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .scroll((u16::try_from(scroll).unwrap_or(u16::MAX), 0));
+
+    frame.render_widget(paragraph, text_area);
+
+    if content_height > viewport_height {
+        if let Some(area) = scrollbar_area {
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None)
+                .track_style(theme::dim())
+                .thumb_style(theme::title());
+
+            let scroll_positions = max_scroll.saturating_add(1);
+            let mut scrollbar_state = ScrollbarState::new(scroll_positions)
+                .viewport_content_length(viewport_height)
+                .position(scroll);
+
+            frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
+        }
+    }
+}
+
+fn wrapped_content_height(lines: &[Line<'_>], width: u16) -> usize {
+    if width == 0 {
+        return 0;
+    }
+
+    let width = usize::from(width);
+    lines
+        .iter()
+        .map(|line| {
+            let line_width = line.width();
+            if line_width == 0 {
+                1
+            } else {
+                (line_width - 1) / width + 1
+            }
+        })
+        .sum()
 }

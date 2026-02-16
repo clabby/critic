@@ -2,12 +2,13 @@
 
 use crate::app::state::AppState;
 use crate::domain::Route;
-use crate::fixtures;
 use crate::render::markdown::MarkdownRenderer;
 use crate::ui;
 use anyhow::Context;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
+
+mod fixtures;
 
 /// Renders demo search and review screens into plain text.
 pub fn render_demo_dump(width: u16, height: u16) -> anyhow::Result<String> {

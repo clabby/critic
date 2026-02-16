@@ -1,4 +1,4 @@
-//! Deterministic fixture data for demo mode and harness rendering.
+//! Deterministic fixture data used by the visual harness.
 
 use crate::domain::{
     IssueComment, PullRequestComment, PullRequestData, PullRequestSummary, ReviewComment,
@@ -9,26 +9,26 @@ use crate::domain::{
 pub fn demo_pull_requests() -> Vec<PullRequestSummary> {
     vec![
         PullRequestSummary {
-            owner: "commonwarexyz".to_owned(),
-            repo: "monorepo".to_owned(),
-            number: 2208,
-            title: "Improve digest handling in consensus cert validation".to_owned(),
-            author: "clabby".to_owned(),
-            head_ref: "feature/cert-digest".to_owned(),
+            owner: "demo-org".to_owned(),
+            repo: "sample-repo".to_owned(),
+            number: 1042,
+            title: "Tighten parser state handling in message codec".to_owned(),
+            author: "mock_author_01".to_owned(),
+            head_ref: "feature/parser-state".to_owned(),
             base_ref: "main".to_owned(),
-            html_url: Some("https://github.com/commonwarexyz/monorepo/pull/2208".to_owned()),
+            html_url: Some("https://example.invalid/demo-org/sample-repo/pull/1042".to_owned()),
             updated_at: "2026-02-13T09:42:00Z".to_owned(),
             updated_at_unix_ms: 1_771_070_920_000,
         },
         PullRequestSummary {
-            owner: "commonwarexyz".to_owned(),
-            repo: "monorepo".to_owned(),
-            number: 2204,
-            title: "Refactor marshaling boundary checks".to_owned(),
-            author: "patrick-ogrady".to_owned(),
-            head_ref: "feature/marshal-boundary".to_owned(),
+            owner: "demo-org".to_owned(),
+            repo: "sample-repo".to_owned(),
+            number: 1037,
+            title: "Refactor wire format validation checkpoints".to_owned(),
+            author: "mock_author_02".to_owned(),
+            head_ref: "feature/wire-checkpoints".to_owned(),
             base_ref: "main".to_owned(),
-            html_url: Some("https://github.com/commonwarexyz/monorepo/pull/2204".to_owned()),
+            html_url: Some("https://example.invalid/demo-org/sample-repo/pull/1037".to_owned()),
             updated_at: "2026-02-12T15:02:00Z".to_owned(),
             updated_at_unix_ms: 1_770_992_520_000,
         },
@@ -43,23 +43,23 @@ pub fn demo_pull_request_data_for(pull: &PullRequestSummary) -> PullRequestData 
         comment: ReviewComment {
             id: 1001,
             in_reply_to_id: None,
-            body: "nit: `Certificate`".to_owned(),
+            body: "nit: consider renaming `MessageEnvelope` to `FrameEnvelope`".to_owned(),
             diff_hunk: Some(
-                "@@ -1,17 +1,20 @@\n type BlockDigest: Digest;\n+/// The type of `Digest` included in consensus certificates.\n type Commitment: Digest;"
+                "@@ -10,8 +10,11 @@\n pub type MessageId = u64;\n+/// Wraps transport metadata with decoded payload.\n pub struct MessageEnvelope {\n     pub id: MessageId,\n     pub body: Vec<u8>,\n }\n"
                     .to_owned(),
             ),
-            path: Some("consensus/src/marshal/store.rs".to_owned()),
-            line: Some(18),
+            path: Some("src/codec/message.rs".to_owned()),
+            line: Some(14),
             start_line: None,
-            original_line: Some(17),
+            original_line: Some(13),
             original_start_line: None,
             side: Some("RIGHT".to_owned()),
             html_url: Some(
-                "https://github.com/commonwarexyz/monorepo/pull/2208#discussion_r2804568679"
+                "https://example.invalid/demo-org/sample-repo/pull/1042#discussion_r1001"
                     .to_owned(),
             ),
             created_at: "2026-02-13T03:32:00Z".to_owned(),
-            author: "patrick-ogrady".to_owned(),
+            author: "mock_reviewer_01".to_owned(),
         },
         replies: vec![ReviewThread {
             thread_id: Some("PRRT_kwDOX-1234M4A9".to_owned()),
@@ -67,20 +67,21 @@ pub fn demo_pull_request_data_for(pull: &PullRequestSummary) -> PullRequestData 
             comment: ReviewComment {
                 id: 1002,
                 in_reply_to_id: Some(1001),
-                body: "I think it's a bit more clear how it is now - if I saw `Certificate` I'd want to put the cert type there, not the cert's payload.".to_owned(),
+                body: "Agreed. `FrameEnvelope` makes call sites easier to read and clarifies payload ownership."
+                    .to_owned(),
                 diff_hunk: None,
-                path: Some("consensus/src/marshal/store.rs".to_owned()),
-                line: Some(18),
+                path: Some("src/codec/message.rs".to_owned()),
+                line: Some(14),
                 start_line: None,
-                original_line: Some(17),
+                original_line: Some(13),
                 original_start_line: None,
                 side: Some("RIGHT".to_owned()),
                 html_url: Some(
-                    "https://github.com/commonwarexyz/monorepo/pull/2208#discussion_r2804600012"
+                    "https://example.invalid/demo-org/sample-repo/pull/1042#discussion_r1002"
                         .to_owned(),
                 ),
                 created_at: "2026-02-13T09:42:00Z".to_owned(),
-                author: "clabby".to_owned(),
+                author: "mock_author_01".to_owned(),
             },
             replies: vec![],
         }],
@@ -92,7 +93,7 @@ pub fn demo_pull_request_data_for(pull: &PullRequestSummary) -> PullRequestData 
         comment: ReviewComment {
             id: 1003,
             in_reply_to_id: None,
-            body: "This comment is on an outdated diff context.".to_owned(),
+            body: "This thread references an outdated diff context.".to_owned(),
             diff_hunk: None,
             path: None,
             line: None,
@@ -101,11 +102,11 @@ pub fn demo_pull_request_data_for(pull: &PullRequestSummary) -> PullRequestData 
             original_start_line: None,
             side: Some("RIGHT".to_owned()),
             html_url: Some(
-                "https://github.com/commonwarexyz/monorepo/pull/2208#discussion_r2804666666"
+                "https://example.invalid/demo-org/sample-repo/pull/1042#discussion_r1003"
                     .to_owned(),
             ),
             created_at: "2026-02-13T11:05:00Z".to_owned(),
-            author: "patrick-ogrady".to_owned(),
+            author: "mock_reviewer_02".to_owned(),
         },
         replies: vec![],
     };
@@ -117,21 +118,21 @@ pub fn demo_pull_request_data_for(pull: &PullRequestSummary) -> PullRequestData 
         head_ref: pull.head_ref.clone(),
         base_ref: pull.base_ref.clone(),
         changed_files: vec![
-            "consensus/src/marshal/store.rs".to_owned(),
-            "consensus/src/certificate.rs".to_owned(),
+            "src/codec/message.rs".to_owned(),
+            "src/codec/mod.rs".to_owned(),
         ],
         comments: vec![
             PullRequestComment::ReviewThread(Box::new(root)),
             PullRequestComment::ReviewThread(Box::new(outdated)),
             PullRequestComment::IssueComment(Box::new(IssueComment {
                 id: 7001,
-                body: "LGTM overall, one minor note.".to_owned(),
+                body: "Looks good overall; I just left one small naming suggestion.".to_owned(),
                 html_url: Some(
-                    "https://github.com/commonwarexyz/monorepo/pull/2208#issuecomment-3010101010"
+                    "https://example.invalid/demo-org/sample-repo/pull/1042#issuecomment_7001"
                         .to_owned(),
                 ),
                 created_at: "2026-02-13T10:01:00Z".to_owned(),
-                author: "clabby".to_owned(),
+                author: "mock_maintainer".to_owned(),
             })),
         ],
     }
