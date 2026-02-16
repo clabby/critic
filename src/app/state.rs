@@ -210,6 +210,7 @@ pub struct ReviewScreenState {
     pub selected_hunk: usize,
     pub diff_search_focused: bool,
     pub diff_search_query: String,
+    pub diff_tree_rows_cache: Vec<DiffTreeRow>,
     pub nodes: Vec<ListNode>,
     pub reply_drafts: HashMap<String, String>,
     collapsed: HashSet<String>,
@@ -234,6 +235,7 @@ impl ReviewScreenState {
             selected_hunk: 0,
             diff_search_focused: false,
             diff_search_query: String::new(),
+            diff_tree_rows_cache: Vec::new(),
             nodes: Vec::new(),
             reply_drafts: HashMap::new(),
             collapsed: HashSet::new(),
@@ -443,7 +445,7 @@ impl ReviewScreenState {
                 self.right_scroll = 0;
             }
             ReviewTab::Diff => {
-                let rows = self.diff_tree_rows();
+                let rows = self.diff_tree_rows().to_vec();
                 if rows.is_empty() {
                     self.selected_diff_row = 0;
                     self.selected_diff_file = 0;
@@ -467,7 +469,7 @@ impl ReviewScreenState {
                 self.right_scroll = 0;
             }
             ReviewTab::Diff => {
-                let rows = self.diff_tree_rows();
+                let rows = self.diff_tree_rows().to_vec();
                 if rows.is_empty() {
                     self.selected_diff_row = 0;
                     self.selected_diff_file = 0;
@@ -541,6 +543,7 @@ impl ReviewScreenState {
         self.selected_hunk = 0;
         self.diff_collapsed_dirs.clear();
         self.diff_search_focused = false;
+        self.diff_tree_rows_cache.clear();
     }
 
     pub fn set_diff(&mut self, diff: PullRequestDiffData) {
@@ -552,8 +555,9 @@ impl ReviewScreenState {
         self.selected_hunk = 0;
         self.diff_collapsed_dirs.clear();
         self.diff_search_focused = false;
+        self.recompute_diff_tree_rows_cache();
 
-        let rows = self.diff_tree_rows();
+        let rows = self.diff_tree_rows().to_vec();
         if let Some((index, row)) = rows
             .iter()
             .enumerate()
@@ -575,6 +579,7 @@ impl ReviewScreenState {
         self.selected_hunk = 0;
         self.diff_collapsed_dirs.clear();
         self.diff_search_focused = false;
+        self.diff_tree_rows_cache.clear();
     }
 
     pub fn active_tab(&self) -> ReviewTab {
@@ -604,16 +609,8 @@ impl ReviewScreenState {
             .unwrap_or(0)
     }
 
-    pub fn diff_tree_rows(&self) -> Vec<DiffTreeRow> {
-        let Some(diff) = self.diff.as_ref() else {
-            return Vec::new();
-        };
-        if self.diff_search_query.trim().is_empty() {
-            return build_diff_tree_rows(diff, &self.diff_collapsed_dirs);
-        }
-
-        let expanded_rows = build_diff_tree_rows(diff, &HashSet::new());
-        filter_diff_tree_rows(&expanded_rows, diff, &self.diff_search_query)
+    pub fn diff_tree_rows(&self) -> &[DiffTreeRow] {
+        &self.diff_tree_rows_cache
     }
 
     pub fn selected_diff_tree_row(&self) -> usize {
@@ -621,24 +618,26 @@ impl ReviewScreenState {
     }
 
     pub fn toggle_selected_diff_directory_collapsed(&mut self) {
-        let rows = self.diff_tree_rows();
+        let rows = self.diff_tree_rows().to_vec();
         let Some(row) = rows.get(self.selected_diff_row) else {
             return;
         };
         if !row.is_directory {
             return;
         }
+        let row_key = row.key.clone();
 
-        if self.diff_collapsed_dirs.contains(&row.key) {
-            self.diff_collapsed_dirs.remove(&row.key);
+        if self.diff_collapsed_dirs.contains(&row_key) {
+            self.diff_collapsed_dirs.remove(&row_key);
         } else {
-            self.diff_collapsed_dirs.insert(row.key.clone());
+            self.diff_collapsed_dirs.insert(row_key.clone());
         }
+        self.recompute_diff_tree_rows_cache();
 
-        let updated_rows = self.diff_tree_rows();
+        let updated_rows = self.diff_tree_rows().to_vec();
         if let Some(index) = updated_rows
             .iter()
-            .position(|candidate| candidate.key == row.key)
+            .position(|candidate| candidate.key == row_key)
         {
             self.selected_diff_row = index;
         } else {
@@ -667,11 +666,13 @@ impl ReviewScreenState {
 
     pub fn diff_search_push_char(&mut self, ch: char) {
         self.diff_search_query.push(ch);
+        self.recompute_diff_tree_rows_cache();
         self.realign_diff_selection_for_filter();
     }
 
     pub fn diff_search_backspace(&mut self) {
         self.diff_search_query.pop();
+        self.recompute_diff_tree_rows_cache();
         self.realign_diff_selection_for_filter();
     }
 
@@ -798,7 +799,7 @@ impl ReviewScreenState {
     }
 
     fn realign_diff_selection_for_filter(&mut self) {
-        let rows = self.diff_tree_rows();
+        let rows = self.diff_tree_rows().to_vec();
         if rows.is_empty() {
             self.selected_diff_row = 0;
             self.selected_diff_file = 0;
@@ -868,7 +869,7 @@ impl ReviewScreenState {
         self.selected_hunk = hunk_index;
         self.diff_scroll = u16::try_from(hunk_start).unwrap_or(u16::MAX);
 
-        let rows = self.diff_tree_rows();
+        let rows = self.diff_tree_rows().to_vec();
         if let Some(row_index) = rows
             .iter()
             .position(|row| row.file_index == Some(file_index))
@@ -897,12 +898,17 @@ impl ReviewScreenState {
             .filter(|segment| !segment.is_empty())
             .collect::<Vec<_>>();
 
+        let mut changed = false;
         for segment in parts.iter().take(parts.len().saturating_sub(1)) {
             if !key.is_empty() {
                 key.push('/');
             }
             key.push_str(segment);
-            self.diff_collapsed_dirs.remove(&key);
+            changed |= self.diff_collapsed_dirs.remove(&key);
+        }
+
+        if changed {
+            self.recompute_diff_tree_rows_cache();
         }
     }
 
@@ -933,6 +939,20 @@ impl ReviewScreenState {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    fn recompute_diff_tree_rows_cache(&mut self) {
+        let Some(diff) = self.diff.as_ref() else {
+            self.diff_tree_rows_cache.clear();
+            return;
+        };
+
+        self.diff_tree_rows_cache = if self.diff_search_query.trim().is_empty() {
+            build_diff_tree_rows(diff, &self.diff_collapsed_dirs)
+        } else {
+            let expanded_rows = build_diff_tree_rows(diff, &HashSet::new());
+            filter_diff_tree_rows(&expanded_rows, diff, &self.diff_search_query)
+        };
     }
 }
 

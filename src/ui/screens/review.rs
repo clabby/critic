@@ -457,31 +457,34 @@ fn render_diff_content(
         (inner, None)
     };
 
-    let lines = if let Some(file) = review.selected_diff_file() {
+    let viewport_height = usize::from(text_area.height.max(1));
+    let (lines, content_height, scroll) = if let Some(file) = review.selected_diff_file() {
         let (left, right) = markdown.diff_file_highlights(file);
-        render_diff_rows(file, text_area.width, left, right)
+        let content_height = file.rows.len().max(1);
+        let max_scroll = content_height.saturating_sub(viewport_height);
+        let scroll = usize::from(review.diff_scroll).min(max_scroll);
+        let lines = render_diff_rows(file, text_area.width, left, right, scroll, viewport_height);
+        (lines, content_height, scroll)
     } else if let Some(error) = &review.diff_error {
-        vec![Line::from(vec![Span::styled(
+        let lines = vec![Line::from(vec![Span::styled(
             format!("Diff unavailable: {error}"),
             theme::error(),
-        )])]
+        )])];
+        (lines, 1usize, 0usize)
     } else {
-        vec![Line::from(vec![Span::styled(
+        let lines = vec![Line::from(vec![Span::styled(
             "Loading pull request diff...",
             theme::dim(),
-        )])]
+        )])];
+        (lines, 1usize, 0usize)
     };
 
-    let viewport_height = usize::from(text_area.height.max(1));
-    let content_height = lines.len().max(1);
-    let max_scroll = content_height.saturating_sub(viewport_height);
-    let scroll = usize::from(review.diff_scroll).min(max_scroll);
-
-    let paragraph = Paragraph::new(lines).scroll((u16::try_from(scroll).unwrap_or(u16::MAX), 0));
+    let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, text_area);
 
     if content_height > viewport_height {
         if let Some(area) = scrollbar_area {
+            let max_scroll = content_height.saturating_sub(viewport_height);
             let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(None)
                 .end_symbol(None)
@@ -500,6 +503,8 @@ fn render_diff_rows(
     width: u16,
     left_syntax: &[Vec<Option<Color>>],
     right_syntax: &[Vec<Option<Color>>],
+    row_offset: usize,
+    row_limit: usize,
 ) -> Vec<Line<'static>> {
     let width = usize::from(width.max(1));
     let separator = " │ ";
@@ -509,6 +514,8 @@ fn render_diff_rows(
 
     file.rows
         .iter()
+        .skip(row_offset)
+        .take(row_limit)
         .map(|row| {
             let mut spans = Vec::new();
             spans.extend(render_diff_side(
@@ -558,14 +565,6 @@ fn render_diff_side(
 
     let visible_chars = text.chars().take(text_width).collect::<Vec<_>>();
     let visible_len = visible_chars.len();
-    let syntax_fg = syntax_fg.map(|line| {
-        line.iter()
-            .copied()
-            .take(visible_len)
-            .chain(std::iter::repeat(None))
-            .take(visible_len)
-            .collect::<Vec<_>>()
-    });
     let base_fg = theme::text().fg.unwrap_or(Color::White);
     let (content_fg, content_bg, highlight_fg, highlight_bg) = match kind {
         PullRequestDiffRowKind::Context => (base_fg, None, base_fg, None),
@@ -666,7 +665,7 @@ fn render_diff_side(
         let highlight_mask = mask_highlight_ranges(&line_highlights, visible_len);
         spans.extend(render_syntax_cells(
             &visible_chars,
-            syntax_fg.as_deref(),
+            syntax_fg,
             content_style,
             highlight_style,
             Some(&highlight_mask),
@@ -687,7 +686,7 @@ fn render_diff_side(
     };
     spans.extend(render_syntax_cells(
         &visible_chars,
-        syntax_fg.as_deref(),
+        syntax_fg,
         fill_style,
         fill_style,
         None,
