@@ -9,7 +9,7 @@ use crate::app::events::{
     MutationRequest, WorkerMessage, spawn_apply_mutation, spawn_load_pull_request_data,
     spawn_load_pull_requests,
 };
-use crate::app::state::{AppState, ReviewSubmissionEvent};
+use crate::app::state::{AppState, ReviewSubmissionEvent, ReviewTab};
 use crate::domain::CommentRef;
 use crate::domain::Route;
 use crate::github::client::create_client;
@@ -147,7 +147,7 @@ fn process_worker_message(state: &mut AppState, message: WorkerMessage) {
             state.end_operation();
 
             match result {
-                Ok(data) => {
+                Ok(loaded) => {
                     state.error_message = None;
 
                     if let Some(review) = state.review.as_mut() {
@@ -155,13 +155,25 @@ fn process_worker_message(state: &mut AppState, message: WorkerMessage) {
                             && review.pull.owner == pull.owner
                             && review.pull.repo == pull.repo
                         {
-                            review.set_data(data);
+                            review.set_data(loaded.data);
+                            if let Some(diff) = loaded.diff {
+                                review.set_diff(diff);
+                            } else if let Some(error) = loaded.diff_error {
+                                review.set_diff_error(error);
+                            }
                             state.route = Route::Review;
                             return;
                         }
                     }
 
-                    state.open_review(pull, data);
+                    state.open_review(pull, loaded.data);
+                    if let Some(review) = state.review.as_mut() {
+                        if let Some(diff) = loaded.diff {
+                            review.set_diff(diff);
+                        } else if let Some(error) = loaded.diff_error {
+                            review.set_diff_error(error);
+                        }
+                    }
                 }
                 Err(error) => {
                     state.error_message = Some(error);
@@ -336,6 +348,12 @@ fn handle_review_key_event(
     tx: &tokio::sync::mpsc::UnboundedSender<WorkerMessage>,
     key: KeyEvent,
 ) {
+    let active_tab = state
+        .review
+        .as_ref()
+        .map(|review| review.active_tab())
+        .unwrap_or(ReviewTab::Threads);
+
     match key.code {
         KeyCode::Char('q') => {
             state.should_quit = true;
@@ -343,8 +361,20 @@ fn handle_review_key_event(
         KeyCode::Char('b') | KeyCode::Esc => {
             state.back_to_search();
         }
+        KeyCode::Tab => {
+            if let Some(review) = state.review.as_mut() {
+                review.next_tab();
+            }
+        }
+        KeyCode::BackTab => {
+            if let Some(review) = state.review.as_mut() {
+                review.prev_tab();
+            }
+        }
         KeyCode::Char('W') => {
-            open_selected_comment_in_browser(state);
+            if active_tab == ReviewTab::Threads {
+                open_selected_comment_in_browser(state);
+            }
         }
         KeyCode::Down | KeyCode::Char('j') => {
             if let Some(review) = state.review.as_mut() {
@@ -371,13 +401,31 @@ fn handle_review_key_event(
             }
         }
         KeyCode::Char('o') | KeyCode::Char('z') => {
-            if let Some(review) = state.review.as_mut() {
-                review.toggle_selected_thread_collapsed();
+            if active_tab == ReviewTab::Threads {
+                if let Some(review) = state.review.as_mut() {
+                    review.toggle_selected_thread_collapsed();
+                }
+            }
+        }
+        KeyCode::Char('n') | KeyCode::Char(']') => {
+            if active_tab == ReviewTab::Diff {
+                if let Some(review) = state.review.as_mut() {
+                    review.jump_next_hunk();
+                }
+            }
+        }
+        KeyCode::Char('N') | KeyCode::Char('[') => {
+            if active_tab == ReviewTab::Diff {
+                if let Some(review) = state.review.as_mut() {
+                    review.jump_prev_hunk();
+                }
             }
         }
         KeyCode::Char('f') => {
-            if let Some(review) = state.review.as_mut() {
-                review.toggle_resolved_filter();
+            if active_tab == ReviewTab::Threads {
+                if let Some(review) = state.review.as_mut() {
+                    review.toggle_resolved_filter();
+                }
             }
         }
         KeyCode::Char('R') => {
@@ -397,6 +445,9 @@ fn handle_review_key_event(
             spawn_load_pull_request_data(tx.clone(), context.client.clone(), pull);
         }
         KeyCode::Char('t') => {
+            if active_tab != ReviewTab::Threads {
+                return;
+            }
             if state.is_busy() {
                 return;
             }
@@ -436,44 +487,56 @@ fn handle_review_key_event(
             );
         }
         KeyCode::Char('e') => {
-            open_reply_editor(terminal, state);
+            if active_tab == ReviewTab::Threads {
+                open_reply_editor(terminal, state);
+            }
         }
         KeyCode::Char('x') => {
-            if let Some(review) = state.review.as_mut() {
-                if let Some(context) = review.selected_thread_context() {
-                    review.clear_reply_draft(&context.root_key);
+            if active_tab == ReviewTab::Threads {
+                if let Some(review) = state.review.as_mut() {
+                    if let Some(context) = review.selected_thread_context() {
+                        review.clear_reply_draft(&context.root_key);
+                    }
                 }
             }
         }
         KeyCode::Char('s') => {
-            send_selected_reply(state, context, tx);
+            if active_tab == ReviewTab::Threads {
+                send_selected_reply(state, context, tx);
+            }
         }
         KeyCode::Char('C') => {
-            open_submit_review_editor_and_submit(
-                terminal,
-                state,
-                context,
-                tx,
-                ReviewSubmissionEvent::Comment,
-            );
+            if active_tab == ReviewTab::Threads {
+                open_submit_review_editor_and_submit(
+                    terminal,
+                    state,
+                    context,
+                    tx,
+                    ReviewSubmissionEvent::Comment,
+                );
+            }
         }
         KeyCode::Char('A') => {
-            open_submit_review_editor_and_submit(
-                terminal,
-                state,
-                context,
-                tx,
-                ReviewSubmissionEvent::Approve,
-            );
+            if active_tab == ReviewTab::Threads {
+                open_submit_review_editor_and_submit(
+                    terminal,
+                    state,
+                    context,
+                    tx,
+                    ReviewSubmissionEvent::Approve,
+                );
+            }
         }
         KeyCode::Char('X') => {
-            open_submit_review_editor_and_submit(
-                terminal,
-                state,
-                context,
-                tx,
-                ReviewSubmissionEvent::RequestChanges,
-            );
+            if active_tab == ReviewTab::Threads {
+                open_submit_review_editor_and_submit(
+                    terminal,
+                    state,
+                    context,
+                    tx,
+                    ReviewSubmissionEvent::RequestChanges,
+                );
+            }
         }
         _ => {}
     }

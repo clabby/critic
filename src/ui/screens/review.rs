@@ -1,7 +1,7 @@
-//! Review split-pane screen renderer.
+//! Review screen renderer with tabs for threads and diffs.
 
-use crate::app::state::AppState;
-use crate::domain::{CommentRef, ListNodeKind};
+use crate::app::state::{AppState, ReviewScreenState, ReviewTab};
+use crate::domain::{CommentRef, ListNodeKind, PullRequestDiffFileStatus, PullRequestDiffRowKind};
 use crate::render::markdown::MarkdownRenderer;
 use crate::render::thread::{
     render_issue_preview, render_review_summary_preview, render_thread_preview,
@@ -10,10 +10,11 @@ use crate::ui::components::shared::short_preview;
 use crate::ui::theme;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
-    ScrollbarState, Wrap,
+    ScrollbarState, Tabs, Wrap,
 };
 
 pub fn render(
@@ -34,6 +35,41 @@ pub fn render(
         return;
     };
 
+    let rows = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(area);
+    render_tabs(frame, rows[0], review.active_tab());
+
+    match review.active_tab() {
+        ReviewTab::Threads => render_threads_tab(frame, rows[1], review, markdown),
+        ReviewTab::Diff => render_diff_tab(frame, rows[1], review),
+    }
+}
+
+fn render_tabs(frame: &mut Frame<'_>, area: Rect, tab: ReviewTab) {
+    let titles = vec![" Threads ", " Diff "];
+    let selected = match tab {
+        ReviewTab::Threads => 0,
+        ReviewTab::Diff => 1,
+    };
+
+    let tabs = Tabs::new(titles)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(theme::border()),
+        )
+        .highlight_style(theme::selected())
+        .style(theme::dim())
+        .select(selected);
+
+    frame.render_widget(tabs, area);
+}
+
+fn render_threads_tab(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    review: &ReviewScreenState,
+    markdown: &mut MarkdownRenderer,
+) {
     let panes =
         Layout::horizontal([Constraint::Percentage(47), Constraint::Percentage(53)]).split(area);
 
@@ -41,11 +77,15 @@ pub fn render(
     render_right_pane(frame, panes[1], review, markdown);
 }
 
-fn render_left_pane(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    review: &crate::app::state::ReviewScreenState,
-) {
+fn render_diff_tab(frame: &mut Frame<'_>, area: Rect, review: &ReviewScreenState) {
+    let panes =
+        Layout::horizontal([Constraint::Percentage(25), Constraint::Percentage(75)]).split(area);
+
+    render_diff_files(frame, panes[0], review);
+    render_diff_content(frame, panes[1], review);
+}
+
+fn render_left_pane(frame: &mut Frame<'_>, area: Rect, review: &ReviewScreenState) {
     let block = Block::default()
         .title(Span::styled(
             format!(" Comments ({}) ", review.nodes.len()),
@@ -170,7 +210,7 @@ fn render_left_pane(
 fn render_right_pane(
     frame: &mut Frame<'_>,
     area: Rect,
-    review: &crate::app::state::ReviewScreenState,
+    review: &ReviewScreenState,
     markdown: &mut MarkdownRenderer,
 ) {
     let block = Block::default()
@@ -243,6 +283,234 @@ fn render_right_pane(
             frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
         }
     }
+}
+
+fn render_diff_files(frame: &mut Frame<'_>, area: Rect, review: &ReviewScreenState) {
+    let count = review.diff_file_count();
+    let block = Block::default()
+        .title(Span::styled(format!(" Files ({count}) ",), theme::title()))
+        .borders(Borders::ALL)
+        .border_style(theme::border());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let (list_area, scrollbar_area) = if inner.width > 1 {
+        let columns = Layout::horizontal([Constraint::Min(1), Constraint::Length(1)]).split(inner);
+        (columns[0], Some(columns[1]))
+    } else {
+        (inner, None)
+    };
+
+    let items: Vec<ListItem<'static>> = if let Some(diff) = &review.diff {
+        if diff.files.is_empty() {
+            vec![ListItem::new(Line::from(vec![Span::styled(
+                "No changed files.",
+                theme::dim(),
+            )]))]
+        } else {
+            diff.files
+                .iter()
+                .map(|file| {
+                    let status = match file.status {
+                        PullRequestDiffFileStatus::Added => {
+                            Span::styled("[A] ", theme::resolved_thread())
+                        }
+                        PullRequestDiffFileStatus::Removed => Span::styled("[D] ", theme::error()),
+                        PullRequestDiffFileStatus::Modified => Span::styled("[M] ", theme::title()),
+                    };
+                    ListItem::new(Line::from(vec![status, Span::raw(file.path.clone())]))
+                })
+                .collect()
+        }
+    } else if let Some(error) = &review.diff_error {
+        vec![ListItem::new(Line::from(vec![Span::styled(
+            format!("Diff unavailable: {error}"),
+            theme::error(),
+        )]))]
+    } else {
+        vec![ListItem::new(Line::from(vec![Span::styled(
+            "Loading pull request diff...",
+            theme::dim(),
+        )]))]
+    };
+
+    let mut list_state = ListState::default();
+    if count > 0 {
+        list_state.select(Some(review.selected_diff_file.min(count.saturating_sub(1))));
+    }
+
+    let list = List::new(items)
+        .highlight_style(theme::selected())
+        .highlight_symbol("▸ ");
+    frame.render_stateful_widget(list, list_area, &mut list_state);
+
+    if count > usize::from(list_area.height) {
+        if let Some(scrollbar_area) = scrollbar_area {
+            let max_scroll = count.saturating_sub(usize::from(list_area.height));
+            let scroll = list_state.offset().min(max_scroll);
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None)
+                .track_style(theme::dim())
+                .thumb_style(theme::title());
+            let mut scrollbar_state = ScrollbarState::new(max_scroll.saturating_add(1))
+                .viewport_content_length(usize::from(list_area.height))
+                .position(scroll);
+            frame.render_stateful_widget(scrollbar, scrollbar_area, &mut scrollbar_state);
+        }
+    }
+}
+
+fn render_diff_content(frame: &mut Frame<'_>, area: Rect, review: &ReviewScreenState) {
+    let title = review
+        .selected_diff_file()
+        .map(|file| format!(" Diff: {} ", file.path))
+        .unwrap_or_else(|| " Diff ".to_owned());
+    let block = Block::default()
+        .title(Span::styled(title, theme::title()))
+        .borders(Borders::ALL)
+        .border_style(theme::border());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let (text_area, scrollbar_area) = if inner.width > 1 {
+        let sections = Layout::horizontal([Constraint::Min(1), Constraint::Length(1)]).split(inner);
+        (sections[0], Some(sections[1]))
+    } else {
+        (inner, None)
+    };
+
+    let lines = if let Some(file) = review.selected_diff_file() {
+        render_diff_rows(file, text_area.width)
+    } else if let Some(error) = &review.diff_error {
+        vec![Line::from(vec![Span::styled(
+            format!("Diff unavailable: {error}"),
+            theme::error(),
+        )])]
+    } else {
+        vec![Line::from(vec![Span::styled(
+            "Loading pull request diff...",
+            theme::dim(),
+        )])]
+    };
+
+    let viewport_height = usize::from(text_area.height.max(1));
+    let content_height = lines.len().max(1);
+    let max_scroll = content_height.saturating_sub(viewport_height);
+    let scroll = usize::from(review.diff_scroll).min(max_scroll);
+
+    let paragraph = Paragraph::new(lines).scroll((u16::try_from(scroll).unwrap_or(u16::MAX), 0));
+    frame.render_widget(paragraph, text_area);
+
+    if content_height > viewport_height {
+        if let Some(area) = scrollbar_area {
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None)
+                .track_style(theme::dim())
+                .thumb_style(theme::title());
+            let mut scrollbar_state = ScrollbarState::new(max_scroll.saturating_add(1))
+                .viewport_content_length(viewport_height)
+                .position(scroll);
+            frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
+        }
+    }
+}
+
+fn render_diff_rows(file: &crate::domain::PullRequestDiffFile, width: u16) -> Vec<Line<'static>> {
+    let width = usize::from(width.max(1));
+    let separator = " │ ";
+    let available = width.saturating_sub(separator.len());
+    let left_width = available / 2;
+    let right_width = available.saturating_sub(left_width);
+
+    file.rows
+        .iter()
+        .map(|row| {
+            let mut spans = Vec::new();
+            spans.extend(render_diff_side(
+                row.left_line_number,
+                &row.left_text,
+                left_width,
+                row.kind,
+                true,
+            ));
+            spans.push(Span::styled(separator.to_owned(), theme::dim()));
+            spans.extend(render_diff_side(
+                row.right_line_number,
+                &row.right_text,
+                right_width,
+                row.kind,
+                false,
+            ));
+            Line::from(spans)
+        })
+        .collect()
+}
+
+fn render_diff_side(
+    line_number: Option<usize>,
+    text: &str,
+    width: usize,
+    kind: PullRequestDiffRowKind,
+    is_left: bool,
+) -> Vec<Span<'static>> {
+    if width == 0 {
+        return Vec::new();
+    }
+
+    let number_width = width.min(6);
+    let text_width = width.saturating_sub(number_width);
+    let number = line_number
+        .map(|value| format!("{value:>5} "))
+        .unwrap_or_else(|| " ".repeat(number_width));
+
+    let mut content: String = text.chars().take(text_width).collect();
+    let content_width = content.chars().count();
+    if content_width < text_width {
+        content.push_str(&" ".repeat(text_width - content_width));
+    }
+
+    let (fg, bg) = match kind {
+        PullRequestDiffRowKind::Context => (theme::text().fg.unwrap_or(Color::White), None),
+        PullRequestDiffRowKind::Added => {
+            if is_left {
+                (
+                    theme::dim().fg.unwrap_or(Color::DarkGray),
+                    Some(Color::Rgb(24, 24, 24)),
+                )
+            } else {
+                (Color::Rgb(172, 218, 170), Some(Color::Rgb(23, 42, 26)))
+            }
+        }
+        PullRequestDiffRowKind::Removed => {
+            if is_left {
+                (Color::Rgb(229, 161, 161), Some(Color::Rgb(52, 23, 25)))
+            } else {
+                (
+                    theme::dim().fg.unwrap_or(Color::DarkGray),
+                    Some(Color::Rgb(24, 24, 24)),
+                )
+            }
+        }
+        PullRequestDiffRowKind::Modified => {
+            if is_left {
+                (Color::Rgb(236, 193, 170), Some(Color::Rgb(58, 43, 35)))
+            } else {
+                (Color::Rgb(194, 220, 194), Some(Color::Rgb(34, 48, 34)))
+            }
+        }
+    };
+
+    let number_style = Style::default()
+        .fg(theme::dim().fg.unwrap_or(Color::DarkGray))
+        .bg(bg.unwrap_or(Color::Reset));
+    let content_style = Style::default().fg(fg).bg(bg.unwrap_or(Color::Reset));
+
+    vec![
+        Span::styled(number, number_style),
+        Span::styled(content, content_style),
+    ]
 }
 
 fn wrapped_content_height(lines: &[Line<'_>], width: u16) -> usize {

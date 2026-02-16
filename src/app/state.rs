@@ -1,8 +1,8 @@
 //! Application state models and route-local behavior.
 
 use crate::domain::{
-    CommentRef, ListNode, ListNodeKind, PullRequestComment, PullRequestData, PullRequestSummary,
-    ReviewThread, Route, review_comment_is_outdated,
+    CommentRef, ListNode, ListNodeKind, PullRequestComment, PullRequestData, PullRequestDiffData,
+    PullRequestDiffFile, PullRequestSummary, ReviewThread, Route, review_comment_is_outdated,
 };
 use crate::search::fuzzy::rank_pull_requests;
 use std::collections::{HashMap, HashSet};
@@ -198,9 +198,15 @@ pub struct ThreadActionContext {
 pub struct ReviewScreenState {
     pub pull: PullRequestSummary,
     pub data: PullRequestData,
+    pub active_tab: ReviewTab,
     pub hide_resolved: bool,
     pub selected_row: usize,
     pub right_scroll: u16,
+    pub diff: Option<PullRequestDiffData>,
+    pub diff_error: Option<String>,
+    pub selected_diff_file: usize,
+    pub diff_scroll: u16,
+    pub selected_hunk: usize,
     pub nodes: Vec<ListNode>,
     pub reply_drafts: HashMap<String, String>,
     collapsed: HashSet<String>,
@@ -212,9 +218,15 @@ impl ReviewScreenState {
         let mut state = Self {
             pull,
             data,
+            active_tab: ReviewTab::Threads,
             hide_resolved: true,
             selected_row: 0,
             right_scroll: 0,
+            diff: None,
+            diff_error: None,
+            selected_diff_file: 0,
+            diff_scroll: 0,
+            selected_hunk: 0,
             nodes: Vec::new(),
             reply_drafts: HashMap::new(),
             collapsed: HashSet::new(),
@@ -412,31 +424,73 @@ impl ReviewScreenState {
     }
 
     pub fn move_down(&mut self) {
-        if self.nodes.is_empty() {
-            self.selected_row = 0;
-            return;
-        }
+        match self.active_tab {
+            ReviewTab::Threads => {
+                if self.nodes.is_empty() {
+                    self.selected_row = 0;
+                    return;
+                }
 
-        self.selected_row = (self.selected_row + 1).min(self.nodes.len() - 1);
-        self.right_scroll = 0;
+                self.selected_row = (self.selected_row + 1).min(self.nodes.len() - 1);
+                self.right_scroll = 0;
+            }
+            ReviewTab::Diff => {
+                let file_count = self.diff.as_ref().map(|diff| diff.files.len()).unwrap_or(0);
+                if file_count == 0 {
+                    self.selected_diff_file = 0;
+                    return;
+                }
+                self.selected_diff_file = (self.selected_diff_file + 1).min(file_count - 1);
+                self.diff_scroll = 0;
+                self.selected_hunk = 0;
+            }
+        }
     }
 
     pub fn move_up(&mut self) {
-        if self.nodes.is_empty() {
-            self.selected_row = 0;
-            return;
-        }
+        match self.active_tab {
+            ReviewTab::Threads => {
+                if self.nodes.is_empty() {
+                    self.selected_row = 0;
+                    return;
+                }
 
-        self.selected_row = self.selected_row.saturating_sub(1);
-        self.right_scroll = 0;
+                self.selected_row = self.selected_row.saturating_sub(1);
+                self.right_scroll = 0;
+            }
+            ReviewTab::Diff => {
+                let file_count = self.diff.as_ref().map(|diff| diff.files.len()).unwrap_or(0);
+                if file_count == 0 {
+                    self.selected_diff_file = 0;
+                    return;
+                }
+                self.selected_diff_file = self.selected_diff_file.saturating_sub(1);
+                self.diff_scroll = 0;
+                self.selected_hunk = 0;
+            }
+        }
     }
 
     pub fn scroll_preview_down(&mut self) {
-        self.right_scroll = self.right_scroll.saturating_add(1);
+        match self.active_tab {
+            ReviewTab::Threads => {
+                self.right_scroll = self.right_scroll.saturating_add(1);
+            }
+            ReviewTab::Diff => {
+                self.diff_scroll = self.diff_scroll.saturating_add(1);
+            }
+        }
     }
 
     pub fn scroll_preview_up(&mut self) {
-        self.right_scroll = self.right_scroll.saturating_sub(1);
+        match self.active_tab {
+            ReviewTab::Threads => {
+                self.right_scroll = self.right_scroll.saturating_sub(1);
+            }
+            ReviewTab::Diff => {
+                self.diff_scroll = self.diff_scroll.saturating_sub(1);
+            }
+        }
     }
 
     pub fn toggle_selected_thread_collapsed(&mut self) {
@@ -470,9 +524,108 @@ impl ReviewScreenState {
         self.rebuild_nodes();
     }
 
+    pub fn set_diff(&mut self, diff: PullRequestDiffData) {
+        self.diff = Some(diff);
+        self.diff_error = None;
+        self.selected_diff_file = 0;
+        self.diff_scroll = 0;
+        self.selected_hunk = 0;
+    }
+
+    pub fn set_diff_error(&mut self, error: String) {
+        self.diff = None;
+        self.diff_error = Some(error);
+        self.selected_diff_file = 0;
+        self.diff_scroll = 0;
+        self.selected_hunk = 0;
+    }
+
+    pub fn active_tab(&self) -> ReviewTab {
+        self.active_tab
+    }
+
+    pub fn next_tab(&mut self) {
+        self.active_tab = match self.active_tab {
+            ReviewTab::Threads => ReviewTab::Diff,
+            ReviewTab::Diff => ReviewTab::Threads,
+        };
+    }
+
+    pub fn prev_tab(&mut self) {
+        self.next_tab();
+    }
+
+    pub fn selected_diff_file(&self) -> Option<&PullRequestDiffFile> {
+        let diff = self.diff.as_ref()?;
+        diff.files.get(self.selected_diff_file)
+    }
+
+    pub fn diff_file_count(&self) -> usize {
+        self.diff
+            .as_ref()
+            .map(|value| value.files.len())
+            .unwrap_or(0)
+    }
+
+    pub fn jump_next_hunk(&mut self) {
+        let Some(hunk_starts) = self
+            .selected_diff_file()
+            .map(|file| file.hunk_starts.clone())
+        else {
+            return;
+        };
+        if hunk_starts.is_empty() {
+            return;
+        }
+
+        let current = usize::from(self.diff_scroll);
+        let next = hunk_starts
+            .iter()
+            .copied()
+            .find(|start| *start > current)
+            .unwrap_or(hunk_starts[0]);
+        self.diff_scroll = u16::try_from(next).unwrap_or(u16::MAX);
+        self.selected_hunk = hunk_starts
+            .iter()
+            .position(|start| *start == next)
+            .unwrap_or(0);
+    }
+
+    pub fn jump_prev_hunk(&mut self) {
+        let Some(hunk_starts) = self
+            .selected_diff_file()
+            .map(|file| file.hunk_starts.clone())
+        else {
+            return;
+        };
+        if hunk_starts.is_empty() {
+            return;
+        }
+
+        let current = usize::from(self.diff_scroll);
+        let previous = hunk_starts
+            .iter()
+            .copied()
+            .rev()
+            .find(|start| *start < current)
+            .unwrap_or_else(|| *hunk_starts.last().unwrap_or(&0));
+        self.diff_scroll = u16::try_from(previous).unwrap_or(u16::MAX);
+        self.selected_hunk = hunk_starts
+            .iter()
+            .position(|start| *start == previous)
+            .unwrap_or(0);
+    }
+
     pub fn is_collapsed(&self, key: &str) -> bool {
         self.collapsed.contains(key)
     }
+}
+
+/// Active sub-view in the review screen.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ReviewTab {
+    Threads,
+    Diff,
 }
 
 fn append_reply_nodes(

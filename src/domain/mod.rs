@@ -13,6 +13,8 @@ pub struct PullRequestSummary {
     pub author: String,
     pub head_ref: String,
     pub base_ref: String,
+    pub head_sha: String,
+    pub base_sha: String,
     pub html_url: Option<String>,
     pub updated_at: String,
     pub updated_at_unix_ms: i64,
@@ -85,6 +87,8 @@ pub struct PullRequestData {
     pub pull_number: u64,
     pub head_ref: String,
     pub base_ref: String,
+    pub head_sha: String,
+    pub base_sha: String,
     pub changed_files: Vec<String>,
     pub comments: Vec<PullRequestComment>,
 }
@@ -105,6 +109,48 @@ impl PullRequestData {
 
         (resolved, total)
     }
+}
+
+/// A rendered pull request diff payload for the diff tab.
+#[derive(Debug, Clone, Default)]
+pub struct PullRequestDiffData {
+    pub files: Vec<PullRequestDiffFile>,
+}
+
+/// A single changed file in the pull request diff.
+#[derive(Debug, Clone)]
+pub struct PullRequestDiffFile {
+    pub path: String,
+    pub status: PullRequestDiffFileStatus,
+    pub rows: Vec<PullRequestDiffRow>,
+    pub hunk_starts: Vec<usize>,
+}
+
+/// File-level status in the pull request diff.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PullRequestDiffFileStatus {
+    Modified,
+    Added,
+    Removed,
+}
+
+/// A single aligned diff row.
+#[derive(Debug, Clone)]
+pub struct PullRequestDiffRow {
+    pub left_line_number: Option<usize>,
+    pub right_line_number: Option<usize>,
+    pub left_text: String,
+    pub right_text: String,
+    pub kind: PullRequestDiffRowKind,
+}
+
+/// Diff row styling category.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PullRequestDiffRowKind {
+    Context,
+    Added,
+    Removed,
+    Modified,
 }
 
 /// The current application route.

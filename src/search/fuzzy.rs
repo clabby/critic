@@ -56,6 +56,8 @@ mod tests {
             author: author.to_owned(),
             head_ref: format!("feature/{number}"),
             base_ref: "main".to_owned(),
+            head_sha: format!("{number:040x}"),
+            base_sha: format!("{:040x}", number + 1),
             html_url: None,
             updated_at: "2026-02-16T00:00:00Z".to_owned(),
             updated_at_unix_ms: number as i64,

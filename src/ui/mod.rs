@@ -1,6 +1,7 @@
 //! Top-level UI composition.
 
 use crate::app::state::AppState;
+use crate::app::state::ReviewTab;
 use crate::domain::{CommentRef, ListNodeKind, Route};
 use crate::render::markdown::MarkdownRenderer;
 use crate::ui::components::footer;
@@ -77,11 +78,20 @@ fn build_hints(state: &AppState) -> String {
         }
         Route::Review => {
             let mut parts = vec![
+                "[tab] switch pane".to_owned(),
                 "[j/k/up/down] navigate".to_owned(),
                 "[pgup/pgdn] scroll".to_owned(),
             ];
 
             if let Some(review) = state.review.as_ref() {
+                if review.active_tab() == ReviewTab::Diff {
+                    parts.push("[n/N] hunk".to_owned());
+                    parts.push("[b] back".to_owned());
+                    parts.push("[R] refresh".to_owned());
+                    parts.push("[q] quit".to_owned());
+                    return parts.join("  ");
+                }
+
                 let has_review_threads = review.data.review_thread_totals().1 > 0;
                 if has_review_threads {
                     let resolved_hint = if review.hide_resolved {

@@ -123,6 +123,8 @@ pub async fn fetch_open_pull_requests(
     let mapped = pulls
         .into_iter()
         .map(|pull| {
+            let head = pull.head;
+            let base = pull.base;
             let updated = pull.updated_at.or(pull.created_at);
             let updated_at = updated
                 .map(|time| time.to_rfc3339())
@@ -141,8 +143,10 @@ pub async fn fetch_open_pull_requests(
                     .as_ref()
                     .map(|user| user.login.clone())
                     .unwrap_or_else(|| "unknown".to_owned()),
-                head_ref: pull.head.ref_field,
-                base_ref: pull.base.ref_field,
+                head_ref: head.ref_field,
+                base_ref: base.ref_field,
+                head_sha: head.sha,
+                base_sha: base.sha,
                 html_url: pull.html_url.map(|url| url.to_string()),
                 updated_at,
                 updated_at_unix_ms: updated_ms,

@@ -10,6 +10,9 @@ Terminal UI for browsing GitHub pull request review threads.
 - Review screen with split panes:
   - Left: comment/thread navigator.
   - Right: rendered thread preview (markdown + syntax-highlighted code blocks via `tui-syntax-highlight`).
+- Review screen tabs:
+  - `Threads`: existing review thread workflow.
+  - `Diff`: 25% file tree + 75% aligned side-by-side PR diff powered by `difft`.
 - Review mutations:
   - Reply to review threads.
   - Resolve/unresolve threads.
@@ -23,6 +26,8 @@ Terminal UI for browsing GitHub pull request review threads.
 
 - Rust toolchain
 - GitHub CLI authenticated (`gh auth login`)
+- Git CLI
+- `difft` (difftastic) in `PATH`
 
 ## Run
 
@@ -87,6 +92,7 @@ This is useful for fast visual checks in CI or local iteration without opening t
 
 ### Review Screen
 
+- `Tab` / `Shift+Tab`: switch between `Threads` and `Diff` tabs
 - `j`/`k` or arrow keys: move selection
 - `o` or `z`: collapse/expand selected thread root
 - `t`: resolve/unresolve selected thread
@@ -99,6 +105,7 @@ This is useful for fast visual checks in CI or local iteration without opening t
 - `X`: open editor and submit request changes
 - `Esc`: back to search
 - `PageDown`/`PageUp`: scroll right preview pane
+- `n` / `N` (or `]` / `[`): next/previous diff hunk (Diff tab)
 - `R`: refresh comments for current pull request
 - `b`: back to search
 - `q`: quit
@@ -119,6 +126,7 @@ cargo test
 - `src/config.rs`: config loader + default `~/.review-tui/config.toml` bootstrap
 - `src/github/pulls.rs`: repository resolution + open PR fetching
 - `src/github/comments.rs`: issue/review comments fetch + thread organization + resolution state
+- `src/github/diff.rs`: local repo sync + difft JSON parsing + aligned per-file diff payload
 - `src/search/fuzzy.rs`: fuzzy ranking via `fuzzy-matcher`
 - `src/render/markdown.rs`: markdown renderer
 - `src/render/syntax.rs`: `tui-syntax-highlight` code block highlighting

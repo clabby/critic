@@ -167,6 +167,8 @@ pub async fn fetch_pull_request_data(
         pull_number: pull.number,
         head_ref: pull.head_ref.clone(),
         base_ref: pull.base_ref.clone(),
+        head_sha: pull.head_sha.clone(),
+        base_sha: pull.base_sha.clone(),
         changed_files,
         comments: merged.into_iter().map(|(_, entry)| entry).collect(),
     })

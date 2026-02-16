@@ -1,10 +1,11 @@
 //! Background worker messages and async data-loading tasks.
 
-use crate::domain::{PullRequestData, PullRequestSummary};
+use crate::domain::{PullRequestData, PullRequestDiffData, PullRequestSummary};
 use crate::github::comments::{
     fetch_pull_request_data, reply_to_review_comment, set_review_thread_resolved,
     submit_pull_request_review,
 };
+use crate::github::diff::fetch_pull_request_diff_data;
 use crate::github::pulls::{fetch_open_pull_requests, resolve_repository};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -17,13 +18,21 @@ pub enum WorkerMessage {
     },
     PullRequestDataLoaded {
         pull: PullRequestSummary,
-        result: Result<PullRequestData, String>,
+        result: Result<PullRequestLoadResult, String>,
     },
     MutationApplied {
         pull: PullRequestSummary,
         clear_reply_root_key: Option<String>,
         result: Result<PullRequestData, String>,
     },
+}
+
+/// Combined payload returned when opening/refreshing a pull request.
+#[derive(Debug, Clone)]
+pub struct PullRequestLoadResult {
+    pub data: PullRequestData,
+    pub diff: Option<PullRequestDiffData>,
+    pub diff_error: Option<String>,
 }
 
 /// Mutation actions supported by the review screen.
@@ -88,9 +97,21 @@ pub fn spawn_load_pull_request_data(
     pull: PullRequestSummary,
 ) {
     tokio::spawn(async move {
-        let result = fetch_pull_request_data(&client, &pull)
-            .await
-            .map_err(|error| error.to_string());
+        let result = match fetch_pull_request_data(&client, &pull).await {
+            Ok(data) => {
+                let diff_result = fetch_pull_request_diff_data(&pull, &data.changed_files).await;
+                let (diff, diff_error) = match diff_result {
+                    Ok(diff) => (Some(diff), None),
+                    Err(error) => (None, Some(error.to_string())),
+                };
+                Ok(PullRequestLoadResult {
+                    data,
+                    diff,
+                    diff_error,
+                })
+            }
+            Err(error) => Err(error.to_string()),
+        };
 
         let _ = tx.send(WorkerMessage::PullRequestDataLoaded { pull, result });
     });
