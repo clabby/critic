@@ -16,6 +16,7 @@ pub struct PullRequestSummary {
     pub html_url: Option<String>,
     pub updated_at: String,
     pub updated_at_unix_ms: i64,
+    pub review_status: Option<PullRequestReviewStatus>,
 }
 
 impl PullRequestSummary {
@@ -31,6 +32,13 @@ impl PullRequestSummary {
     pub fn display_line(&self) -> String {
         format!("#{} {} (@{})", self.number, self.title, self.author)
     }
+}
+
+/// Aggregate review state shown on the search list.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PullRequestReviewStatus {
+    Approved,
+    ChangesRequested,
 }
 
 /// A pull request review comment from GitHub API.

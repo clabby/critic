@@ -6,6 +6,7 @@ Terminal UI for browsing GitHub pull request review threads.
 
 - Authenticated GitHub client via `gh auth token` + `secrecy`.
 - Search screen with fuzzy finding across open pull requests.
+- Search screen review badges: `✅` approved, `❌` changes requested.
 - Review screen with split panes:
   - Left: comment/thread navigator.
   - Right: rendered thread preview (markdown + syntax-highlighted code blocks via `tui-syntax-highlight`).

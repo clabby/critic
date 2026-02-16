@@ -1,8 +1,8 @@
 //! Deterministic fixture data used by the visual harness.
 
 use crate::domain::{
-    IssueComment, PullRequestComment, PullRequestData, PullRequestSummary, PullReviewSummary,
-    ReviewComment, ReviewThread,
+    IssueComment, PullRequestComment, PullRequestData, PullRequestReviewStatus, PullRequestSummary,
+    PullReviewSummary, ReviewComment, ReviewThread,
 };
 use serde_json::json;
 
@@ -20,6 +20,7 @@ pub fn demo_pull_requests() -> Vec<PullRequestSummary> {
             html_url: Some("https://example.invalid/demo-org/sample-repo/pull/1042".to_owned()),
             updated_at: "2026-02-13T09:42:00Z".to_owned(),
             updated_at_unix_ms: 1_771_070_920_000,
+            review_status: Some(PullRequestReviewStatus::Approved),
         },
         PullRequestSummary {
             owner: "demo-org".to_owned(),
@@ -32,6 +33,7 @@ pub fn demo_pull_requests() -> Vec<PullRequestSummary> {
             html_url: Some("https://example.invalid/demo-org/sample-repo/pull/1037".to_owned()),
             updated_at: "2026-02-12T15:02:00Z".to_owned(),
             updated_at_unix_ms: 1_770_992_520_000,
+            review_status: Some(PullRequestReviewStatus::ChangesRequested),
         },
     ]
 }

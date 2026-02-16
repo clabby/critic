@@ -45,7 +45,7 @@ pub fn rank_pull_requests(query: &str, pulls: &[PullRequestSummary]) -> Vec<Fuzz
 #[cfg(test)]
 mod tests {
     use super::rank_pull_requests;
-    use crate::domain::PullRequestSummary;
+    use crate::domain::{PullRequestReviewStatus, PullRequestSummary};
 
     fn pull(number: u64, title: &str, author: &str) -> PullRequestSummary {
         PullRequestSummary {
@@ -59,6 +59,7 @@ mod tests {
             html_url: None,
             updated_at: "2026-02-16T00:00:00Z".to_owned(),
             updated_at_unix_ms: number as i64,
+            review_status: Some(PullRequestReviewStatus::Approved),
         }
     }
 

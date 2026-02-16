@@ -1,6 +1,7 @@
 //! Pull request fuzzy-search screen renderer.
 
 use crate::app::state::AppState;
+use crate::domain::PullRequestReviewStatus;
 use crate::ui::components::shared::short_timestamp;
 use crate::ui::theme;
 use ratatui::Frame;
@@ -92,7 +93,17 @@ fn render_results(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             .iter()
             .filter_map(|index| state.pull_requests.get(*index))
             .map(|pull| {
+                let status_icon = match pull.review_status {
+                    Some(PullRequestReviewStatus::Approved) => {
+                        Span::styled("✅ ", theme::resolved_thread())
+                    }
+                    Some(PullRequestReviewStatus::ChangesRequested) => {
+                        Span::styled("❌ ", theme::error())
+                    }
+                    None => Span::raw(""),
+                };
                 ListItem::new(Line::from(vec![
+                    status_icon,
                     Span::styled(format!("#{} ", pull.number), theme::title()),
                     Span::raw(pull.title.clone()),
                     Span::styled(format!("  @{}", pull.author), theme::dim()),

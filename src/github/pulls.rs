@@ -1,9 +1,12 @@
 //! Open pull request discovery and mapping for the search screen.
 
-use crate::domain::PullRequestSummary;
+use crate::domain::{PullRequestReviewStatus, PullRequestSummary};
+use octocrab::models::pulls::ReviewState;
 use serde::Deserialize;
+use std::collections::{HashMap, VecDeque};
 use thiserror::Error;
 use tokio::process::Command;
+use tokio::task::JoinSet;
 
 /// Result type for pull request queries.
 pub type Result<T> = std::result::Result<T, PullRequestQueryError>;
@@ -101,6 +104,7 @@ pub async fn fetch_open_pull_requests(
         .await?;
 
     let mut pulls = client.all_pages(first_page).await?;
+    let review_statuses = fetch_review_statuses(client, repository, &pulls).await;
 
     pulls.sort_by(|a, b| {
         let a_ts = a
@@ -142,9 +146,120 @@ pub async fn fetch_open_pull_requests(
                 html_url: pull.html_url.map(|url| url.to_string()),
                 updated_at,
                 updated_at_unix_ms: updated_ms,
+                review_status: review_statuses.get(&pull.number).copied().flatten(),
             }
         })
         .collect();
 
     Ok(mapped)
+}
+
+async fn fetch_review_statuses(
+    client: &octocrab::Octocrab,
+    repository: &RepositoryRef,
+    pulls: &[octocrab::models::pulls::PullRequest],
+) -> HashMap<u64, Option<PullRequestReviewStatus>> {
+    let mut pending: VecDeque<u64> = pulls.iter().map(|pull| pull.number).collect();
+    let mut out = HashMap::with_capacity(pulls.len());
+    let mut in_flight = JoinSet::new();
+    let concurrency = pending.len().clamp(1, 8);
+
+    for _ in 0..concurrency {
+        spawn_review_status_task(&mut in_flight, client, repository, &mut pending);
+    }
+
+    while let Some(joined) = in_flight.join_next().await {
+        if let Ok((number, status)) = joined {
+            out.insert(number, status);
+        }
+        spawn_review_status_task(&mut in_flight, client, repository, &mut pending);
+    }
+
+    out
+}
+
+fn spawn_review_status_task(
+    in_flight: &mut JoinSet<(u64, Option<PullRequestReviewStatus>)>,
+    client: &octocrab::Octocrab,
+    repository: &RepositoryRef,
+    pending: &mut VecDeque<u64>,
+) {
+    let Some(number) = pending.pop_front() else {
+        return;
+    };
+
+    let client = client.clone();
+    let owner = repository.owner.clone();
+    let repo = repository.repo.clone();
+
+    in_flight.spawn(async move {
+        let status = fetch_pull_review_status(&client, &owner, &repo, number)
+            .await
+            .unwrap_or(None);
+        (number, status)
+    });
+}
+
+async fn fetch_pull_review_status(
+    client: &octocrab::Octocrab,
+    owner: &str,
+    repo: &str,
+    pull_number: u64,
+) -> std::result::Result<Option<PullRequestReviewStatus>, octocrab::Error> {
+    let first_page = client
+        .pulls(owner, repo)
+        .list_reviews(pull_number)
+        .per_page(100)
+        .send()
+        .await?;
+    let reviews = client.all_pages(first_page).await?;
+
+    Ok(classify_review_status(&reviews))
+}
+
+fn classify_review_status(
+    reviews: &[octocrab::models::pulls::Review],
+) -> Option<PullRequestReviewStatus> {
+    let mut latest_by_user: HashMap<&str, PullRequestReviewStatus> = HashMap::new();
+
+    for review in reviews {
+        let Some(user) = review.user.as_ref() else {
+            continue;
+        };
+        let Some(state) = review.state else {
+            continue;
+        };
+
+        match state {
+            ReviewState::Approved => {
+                latest_by_user.insert(user.login.as_str(), PullRequestReviewStatus::Approved);
+            }
+            ReviewState::ChangesRequested => {
+                latest_by_user.insert(
+                    user.login.as_str(),
+                    PullRequestReviewStatus::ChangesRequested,
+                );
+            }
+            ReviewState::Dismissed => {
+                latest_by_user.remove(user.login.as_str());
+            }
+            ReviewState::Open | ReviewState::Pending | ReviewState::Commented => {}
+            _ => {}
+        }
+    }
+
+    if latest_by_user
+        .values()
+        .any(|state| *state == PullRequestReviewStatus::ChangesRequested)
+    {
+        return Some(PullRequestReviewStatus::ChangesRequested);
+    }
+    if latest_by_user
+        .values()
+        .any(|state| *state == PullRequestReviewStatus::Approved)
+    {
+        return Some(PullRequestReviewStatus::Approved);
+    }
+
+    None
 }
