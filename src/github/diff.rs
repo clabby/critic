@@ -657,7 +657,7 @@ fn normalize_path_for_lookup(path: &str) -> String {
 
 fn runtime_root() -> Result<PathBuf> {
     let home = env::var_os("HOME").ok_or(PullRequestDiffError::MissingHomeDirectory)?;
-    Ok(PathBuf::from(home).join(".review-tui"))
+    Ok(PathBuf::from(home).join(".critic"))
 }
 
 fn repo_cache_dir(pull: &PullRequestSummary) -> Result<PathBuf> {

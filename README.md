@@ -1,4 +1,4 @@
-# review-tui
+# critic
 
 Terminal UI for browsing GitHub pull request review threads.
 
@@ -64,7 +64,7 @@ cargo run -- config --edit
 
 ## Configuration
 
-On startup, `review-tui` loads `~/.review-tui/config.toml`. If the file does not exist, it is created automatically with defaults.
+On startup, `critic` loads `~/.critic/config.toml`. If the file does not exist, it is created automatically with defaults.
 
 Theme colors are configurable under `[theme]`:
 
@@ -146,7 +146,7 @@ cargo test
 ## Module Layout
 
 - `src/github/client.rs`: authenticated Octocrab client (`gh auth token`)
-- `src/config.rs`: config loader + default `~/.review-tui/config.toml` bootstrap
+- `src/config.rs`: config loader + default `~/.critic/config.toml` bootstrap
 - `src/github/pulls.rs`: repository resolution + open PR fetching
 - `src/github/comments.rs`: issue/review comments fetch + thread organization + resolution state
 - `src/github/diff.rs`: local repo sync + difft JSON parsing + aligned per-file diff payload

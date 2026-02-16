@@ -1,4 +1,4 @@
-//! review-tui library crate.
+//! critic library crate.
 
 pub mod app;
 pub mod config;

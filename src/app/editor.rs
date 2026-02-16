@@ -122,11 +122,7 @@ fn temp_file_path() -> PathBuf {
         .map(|duration| duration.as_millis())
         .unwrap_or(0);
 
-    env::temp_dir().join(format!(
-        "review-tui-edit-{}-{}.md",
-        std::process::id(),
-        millis
-    ))
+    env::temp_dir().join(format!("critic-edit-{}-{}.md", std::process::id(), millis))
 }
 
 fn suspend_tui() -> Result<()> {

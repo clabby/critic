@@ -1,10 +1,10 @@
 use clap::{ArgGroup, Args, Parser, Subcommand};
-use review_tui::app::editor;
-use review_tui::app::{self, AppConfig};
-use review_tui::config;
+use critic::app::editor;
+use critic::app::{self, AppConfig};
+use critic::config;
 #[cfg(feature = "harness")]
-use review_tui::harness;
-use review_tui::ui::theme;
+use critic::harness;
+use critic::ui::theme;
 
 /// Terminal UI for GitHub pull-request review thread browsing.
 #[derive(Debug, Parser)]
@@ -43,7 +43,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Inspect or edit review-tui configuration.
+    /// Inspect or edit critic configuration.
     Config(ConfigCommand),
 }
 

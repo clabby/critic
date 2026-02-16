@@ -398,6 +398,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "critic"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "crossterm",
+ "fuzzy-matcher",
+ "octocrab",
+ "pulldown-cmark",
+ "ratatui",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "syntect",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml",
+ "tui-syntax-highlight",
+]
+
+[[package]]
 name = "crossterm"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2163,27 +2184,6 @@ name = "regex-syntax"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a96887878f22d7bad8a3b6dc5b7440e0ada9a245242924394987b21cf2210a4c"
-
-[[package]]
-name = "review-tui"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "crossterm",
- "fuzzy-matcher",
- "octocrab",
- "pulldown-cmark",
- "ratatui",
- "secrecy",
- "serde",
- "serde_json",
- "syntect",
- "thiserror 2.0.18",
- "tokio",
- "toml",
- "tui-syntax-highlight",
-]
 
 [[package]]
 name = "rfc6979"

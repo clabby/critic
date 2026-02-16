@@ -82,6 +82,6 @@ mod tests {
         let dump = render_demo_dump(120, 36).expect("render should succeed");
         assert!(dump.contains("=== SEARCH SCREEN ==="));
         assert!(dump.contains("=== REVIEW SCREEN ==="));
-        assert!(dump.contains("review-tui"));
+        assert!(dump.contains("critic"));
     }
 }

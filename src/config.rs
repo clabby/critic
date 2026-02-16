@@ -1,4 +1,4 @@
-//! User configuration loading from `~/.review-tui/config.toml`.
+//! User configuration loading from `~/.critic/config.toml`.
 
 use crate::ui::theme::ThemePalette;
 use anyhow::{Context, Result, anyhow};
@@ -8,10 +8,10 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const CONFIG_DIR: &str = ".review-tui";
+const CONFIG_DIR: &str = ".critic";
 const CONFIG_FILE: &str = "config.toml";
 
-const DEFAULT_CONFIG_TOML: &str = r##"# review-tui configuration
+const DEFAULT_CONFIG_TOML: &str = r##"# critic configuration
 # Colors accept `#RRGGBB` or named ANSI colors (e.g. "yellow", "dark_gray").
 
 [theme]
@@ -59,7 +59,7 @@ pub fn ensure_config_file() -> Result<PathBuf> {
     Ok(path)
 }
 
-/// Loads configuration from `~/.review-tui/config.toml`, creating defaults if missing.
+/// Loads configuration from `~/.critic/config.toml`, creating defaults if missing.
 pub fn load_or_create() -> Result<AppConfig> {
     let path = ensure_config_file()?;
     let content = fs::read_to_string(&path)

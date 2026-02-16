@@ -50,7 +50,7 @@ pub fn render(frame: &mut Frame<'_>, state: &AppState, markdown: &mut MarkdownRe
         frame,
         root[0],
         &HeaderModel {
-            app_label: "review-tui".to_owned(),
+            app_label: "critic".to_owned(),
             context_label,
             operation: state.operation_display(),
             error: state.error_message.clone(),

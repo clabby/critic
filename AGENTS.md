@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This file defines engineering practices for contributors and coding agents working on `review-tui`.
+This file defines engineering practices for contributors and coding agents working on `critic`.
 
 ## Core principles
 
