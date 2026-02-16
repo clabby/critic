@@ -9,7 +9,7 @@ authors = ["clabby"]
 homepage = "https://github.com/clabby/critic"
 repository = "https://github.com/clabby/critic"
 keywords = ["GitHub", "review", "TUI"]
-categories = ["git"]
+categories = ["development-tools"]
 include = [
   "src/**",
   "Cargo.toml",
