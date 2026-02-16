@@ -16,7 +16,6 @@
 - Leave pending inline diff comments and submit them in a review batch.
 - Persist in-progress draft review comments to disk so interrupted sessions can recover.
 - Open the active PR/comment directly in the browser when needed.
-- Auto-create and manage `~/.critic/config.toml` (`critic config --path`, `critic config --edit`).
 
 ## Installation
 
