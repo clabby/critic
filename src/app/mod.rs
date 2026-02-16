@@ -307,8 +307,7 @@ fn maybe_refresh_theme(
         return;
     }
 
-    let detected = config::detect_terminal_theme_sample_live(Duration::from_millis(120))
-        .or_else(config::detect_terminal_theme_sample_passive);
+    let detected = config::detect_terminal_theme_sample_live(Duration::from_millis(0));
     let Some(detected) = detected else {
         return;
     };

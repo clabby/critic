@@ -214,7 +214,7 @@ fn render_right_pane(
         .borders(Borders::ALL)
         .border_style(theme::border());
 
-    let mut lines = if let Some(node) = review.selected_node() {
+    let lines = if let Some(node) = review.selected_node() {
         match (&node.kind, &node.comment) {
             (ListNodeKind::Issue, CommentRef::Issue(issue)) => {
                 render_issue_preview(markdown, issue)
@@ -249,8 +249,6 @@ fn render_right_pane(
     } else {
         (inner, None)
     };
-
-    fill_fenced_code_backgrounds(&mut lines, text_area.width);
 
     let viewport_height = usize::from(text_area.height);
     let content_height = wrapped_content_height(&lines, text_area.width);
@@ -841,47 +839,4 @@ fn wrapped_content_height(lines: &[Line<'_>], width: u16) -> usize {
             }
         })
         .sum()
-}
-
-fn fill_fenced_code_backgrounds(lines: &mut [Line<'static>], width: u16) {
-    let width = usize::from(width);
-    if width == 0 {
-        return;
-    }
-
-    for line in lines {
-        if !is_fenced_code_line(line) {
-            continue;
-        }
-
-        let Some(background) = line.spans.iter().find_map(|span| span.style.bg) else {
-            continue;
-        };
-
-        let line_width = line.width();
-        if line_width >= width {
-            continue;
-        }
-
-        let padding = width - line_width;
-        line.spans.push(Span::styled(
-            " ".repeat(padding),
-            theme::code_padding().bg(background),
-        ));
-    }
-}
-
-fn is_fenced_code_line(line: &Line<'_>) -> bool {
-    let has_background = line.spans.iter().any(|span| span.style.bg.is_some());
-    if !has_background {
-        return false;
-    }
-
-    let leading_space_spans = line
-        .spans
-        .iter()
-        .take_while(|span| span.content.chars().all(|ch| ch == ' '))
-        .count();
-
-    leading_space_spans >= 2
 }

@@ -2,14 +2,12 @@
 
 use crate::ui::theme::{ThemeMode, ThemePalette};
 use anyhow::{Context, Result, anyhow};
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
-use crossterm::terminal;
+use dark_light::Mode;
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
-use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const CONFIG_DIR: &str = ".critic";
 const CONFIG_FILE: &str = "config.toml";
@@ -195,15 +193,8 @@ pub fn detect_terminal_theme_mode() -> Option<ThemeMode> {
 
 /// Detects terminal theme mode and (if available) terminal background RGB.
 pub fn detect_terminal_theme_sample() -> Option<TerminalThemeSample> {
-    detect_from_osc11_query(Duration::from_millis(450))
-        .or_else(detect_with_termbg_sample)
-        .or_else(|| {
-            detect_from_term_background_env().map(|mode| TerminalThemeSample {
-                mode,
-                background_rgb: None,
-            })
-        })
-        .or_else(detect_from_colorfgbg_sample)
+    detect_terminal_theme_sample_passive()
+        .or_else(|| detect_with_termbg_sample(Duration::from_millis(120)))
 }
 
 /// Detects terminal background mode without active terminal probes.
@@ -222,6 +213,7 @@ pub fn detect_terminal_theme_sample_passive() -> Option<TerminalThemeSample> {
             background_rgb: None,
         })
         .or_else(detect_from_colorfgbg_sample)
+        .or_else(detect_from_system_theme_sample)
 }
 
 /// Detects terminal background mode with a bounded live probe suitable for
@@ -231,29 +223,27 @@ pub fn detect_terminal_theme_mode_live(timeout: Duration) -> Option<ThemeMode> {
 }
 
 /// Runtime-safe terminal theme detection that can include terminal background RGB.
-pub fn detect_terminal_theme_sample_live(timeout: Duration) -> Option<TerminalThemeSample> {
-    detect_from_osc11_query(timeout)
-        .or_else(|| {
-            detect_from_term_background_env().map(|mode| TerminalThemeSample {
-                mode,
-                background_rgb: None,
-            })
-        })
-        .or_else(detect_from_colorfgbg_sample)
+pub fn detect_terminal_theme_sample_live(_timeout: Duration) -> Option<TerminalThemeSample> {
+    detect_terminal_theme_sample_passive()
 }
 
 /// Detects terminal background RGB when available.
 pub fn detect_terminal_background_rgb() -> Option<(u8, u8, u8)> {
-    detect_terminal_theme_sample().and_then(|sample| sample.background_rgb)
+    detect_from_colorfgbg_sample()
+        .and_then(|sample| sample.background_rgb)
+        .or_else(|| {
+            detect_with_termbg_sample(Duration::from_millis(120))
+                .and_then(|sample| sample.background_rgb)
+        })
 }
 
 /// Runtime-safe terminal background RGB detection.
-pub fn detect_terminal_background_rgb_live(timeout: Duration) -> Option<(u8, u8, u8)> {
-    detect_terminal_theme_sample_live(timeout).and_then(|sample| sample.background_rgb)
+pub fn detect_terminal_background_rgb_live(_timeout: Duration) -> Option<(u8, u8, u8)> {
+    detect_from_colorfgbg_sample().and_then(|sample| sample.background_rgb)
 }
 
-fn detect_with_termbg_sample() -> Option<TerminalThemeSample> {
-    match termbg::rgb(Duration::from_millis(900)) {
+fn detect_with_termbg_sample(timeout: Duration) -> Option<TerminalThemeSample> {
+    match termbg::rgb(timeout) {
         Ok(rgb) => {
             let mode = theme_mode_from_rgb(rgb.r, rgb.g, rgb.b);
             Some(TerminalThemeSample {
@@ -267,177 +257,6 @@ fn detect_with_termbg_sample() -> Option<TerminalThemeSample> {
         }
         _ => None,
     }
-}
-
-fn detect_from_osc11_query(timeout: Duration) -> Option<TerminalThemeSample> {
-    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        return None;
-    }
-
-    let raw_before = terminal::is_raw_mode_enabled().ok().unwrap_or(false);
-    if !raw_before && terminal::enable_raw_mode().is_err() {
-        return None;
-    }
-
-    let probe = || -> Option<TerminalThemeSample> {
-        discard_pending_events();
-
-        let mut stdout = io::stdout();
-        let queries = if env::var_os("TMUX").is_some() {
-            [
-                "\x1bPtmux;\x1b\x1b]11;?\x1b\\\x1b\\",
-                "\x1bPtmux;\x1b\x1b]11;?\x07\x1b\\",
-                "\x1b]11;?\x07",
-                "\x1b]11;?\x1b\\",
-            ]
-        } else {
-            ["\x1b]11;?\x07", "\x1b]11;?\x1b\\", "", ""]
-        };
-
-        for query in queries {
-            if query.is_empty() {
-                continue;
-            }
-
-            if stdout.write_all(query.as_bytes()).is_err() || stdout.flush().is_err() {
-                return None;
-            }
-
-            if let Some(sample) = wait_for_osc11_response(timeout) {
-                return Some(sample);
-            }
-        }
-
-        None
-    };
-
-    let result = probe();
-    if !raw_before {
-        let _ = terminal::disable_raw_mode();
-    }
-    result
-}
-
-fn discard_pending_events() {
-    while event::poll(Duration::from_millis(0)).ok().unwrap_or(false) {
-        if event::read().is_err() {
-            break;
-        }
-    }
-}
-
-fn wait_for_osc11_response(timeout: Duration) -> Option<TerminalThemeSample> {
-    let start = Instant::now();
-    let mut response = String::with_capacity(128);
-
-    while start.elapsed() <= timeout {
-        if !event::poll(Duration::from_millis(20)).ok()? {
-            continue;
-        }
-
-        let Event::Key(key) = event::read().ok()? else {
-            continue;
-        };
-
-        match (key.code, key.modifiers) {
-            (KeyCode::Esc, _) => response.push('\x1b'),
-            (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
-                if is_likely_osc_char(c) {
-                    response.push(c);
-                } else {
-                    // Most likely real user input, abort this probe quickly.
-                    return None;
-                }
-            }
-            (KeyCode::Char('\\'), KeyModifiers::ALT) => response.push('\\'),
-            _ => {}
-        }
-
-        if let Some((r, g, b)) = parse_osc11_rgb(&response) {
-            drain_response_tail(Duration::from_millis(40));
-            return Some(TerminalThemeSample {
-                mode: theme_mode_from_rgb(r, g, b),
-                background_rgb: Some((
-                    scale_channel_u16_to_u8(r),
-                    scale_channel_u16_to_u8(g),
-                    scale_channel_u16_to_u8(b),
-                )),
-            });
-        }
-    }
-
-    None
-}
-
-fn drain_response_tail(max_duration: Duration) {
-    let start = Instant::now();
-    while start.elapsed() < max_duration {
-        if !event::poll(Duration::from_millis(0)).ok().unwrap_or(false) {
-            break;
-        }
-        if event::read().is_err() {
-            break;
-        }
-    }
-}
-
-fn is_likely_osc_char(c: char) -> bool {
-    c.is_ascii_hexdigit()
-        || matches!(c, '\u{0007}' | ':' | '/' | ';' | '?' | ']' | '\\')
-        || matches!(
-            c,
-            'r' | 'g' | 'b' | 'R' | 'G' | 'B' | 'P' | 't' | 'm' | 'u' | 'x'
-        )
-}
-
-fn parse_osc11_rgb(response: &str) -> Option<(u16, u16, u16)> {
-    let start = response.find("rgb:")? + 4;
-    let tail = &response[start..];
-    let mut channels: Vec<String> = Vec::with_capacity(3);
-    let mut current = String::new();
-
-    for ch in tail.chars() {
-        if ch.is_ascii_hexdigit() {
-            current.push(ch);
-            continue;
-        }
-        if ch == '/' {
-            if current.is_empty() {
-                return None;
-            }
-            channels.push(std::mem::take(&mut current));
-            if channels.len() > 3 {
-                break;
-            }
-            continue;
-        }
-        break;
-    }
-
-    if !current.is_empty() && channels.len() < 3 {
-        channels.push(current);
-    }
-    if channels.len() < 3 {
-        return None;
-    }
-
-    let r = parse_hex_channel_scaled(&channels[0])?;
-    let g = parse_hex_channel_scaled(&channels[1])?;
-    let b = parse_hex_channel_scaled(&channels[2])?;
-    Some((r, g, b))
-}
-
-fn parse_hex_channel_scaled(raw: &str) -> Option<u16> {
-    if raw.is_empty() || raw.len() > 4 {
-        return None;
-    }
-    let value = u16::from_str_radix(raw, 16).ok()?;
-    let bits = (raw.len() as u32) * 4;
-    if bits == 16 {
-        return Some(value);
-    }
-    let max = (1u32 << bits) - 1;
-    Some(((u32::from(value) * 65535) / max) as u16)
 }
 
 fn theme_mode_from_rgb(r: u16, g: u16, b: u16) -> ThemeMode {
@@ -460,6 +279,19 @@ fn detect_from_term_background_env() -> Option<ThemeMode> {
     }
 
     None
+}
+
+fn detect_from_system_theme_sample() -> Option<TerminalThemeSample> {
+    let mode = match dark_light::detect() {
+        Mode::Dark => ThemeMode::Dark,
+        Mode::Light => ThemeMode::Light,
+        Mode::Default => return None,
+    };
+
+    Some(TerminalThemeSample {
+        mode,
+        background_rgb: None,
+    })
 }
 
 fn detect_from_colorfgbg_sample() -> Option<TerminalThemeSample> {
@@ -535,8 +367,8 @@ fn parse_theme_mode_hint(value: &str) -> Option<ThemeMode> {
 mod tests {
     use super::{
         AppConfig, ThemePreference, ansi_256_to_rgb, build_default_config_toml,
-        detect_from_colorfgbg_sample, parse_app_config, parse_hex_channel_scaled, parse_osc11_rgb,
-        parse_theme_mode_hint, parse_theme_preference, theme_mode_from_rgb,
+        detect_from_colorfgbg_sample, parse_app_config, parse_theme_mode_hint,
+        parse_theme_preference, theme_mode_from_rgb,
     };
     use crate::ui::theme::ThemeMode;
     use std::env;
@@ -583,26 +415,6 @@ mod tests {
         unsafe {
             env::remove_var("COLORFGBG");
         }
-    }
-
-    #[test]
-    fn parse_osc11_rgb_handles_8bit_and_16bit_channels() {
-        assert_eq!(
-            parse_osc11_rgb("\u{1b}]11;rgb:ff/aa/00\u{7}"),
-            Some((65535, 43690, 0))
-        );
-        assert_eq!(
-            parse_osc11_rgb("\u{1b}]11;rgb:ffff/8080/0000\u{1b}\\"),
-            Some((65535, 32896, 0))
-        );
-    }
-
-    #[test]
-    fn parse_hex_channel_scaled_supports_variable_precision() {
-        assert_eq!(parse_hex_channel_scaled("f"), Some(65535));
-        assert_eq!(parse_hex_channel_scaled("ff"), Some(65535));
-        assert_eq!(parse_hex_channel_scaled("7f"), Some(32639));
-        assert_eq!(parse_hex_channel_scaled("8000"), Some(32768));
     }
 
     #[test]

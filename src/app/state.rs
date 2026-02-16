@@ -825,8 +825,17 @@ impl ReviewScreenState {
         }
 
         self.selected_diff_file = file_index;
-        self.diff_scroll = 0;
+        self.diff_scroll = self.first_hunk_scroll(file_index);
         self.selected_hunk = 0;
+    }
+
+    fn first_hunk_scroll(&self, file_index: usize) -> u16 {
+        self.diff
+            .as_ref()
+            .and_then(|diff| diff.files.get(file_index))
+            .and_then(|file| file.hunk_starts.first().copied())
+            .and_then(|value| u16::try_from(value).ok())
+            .unwrap_or(0)
     }
 
     fn realign_diff_selection_for_filter(&mut self) {
@@ -888,13 +897,7 @@ impl ReviewScreenState {
         self.selected_diff_row = row_index;
         self.selected_diff_file = file_index;
         self.selected_hunk = 0;
-        self.diff_scroll = self
-            .diff
-            .as_ref()
-            .and_then(|diff| diff.files.get(file_index))
-            .and_then(|file| file.hunk_starts.first().copied())
-            .and_then(|value| u16::try_from(value).ok())
-            .unwrap_or(0);
+        self.diff_scroll = self.first_hunk_scroll(file_index);
     }
 
     fn set_active_hunk(&mut self, file_index: usize, hunk_start: usize, hunk_index: usize) {
@@ -1266,7 +1269,7 @@ fn join_path(parent: &str, segment: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ReviewScreenState, build_diff_tree_rows};
+    use super::{ReviewScreenState, ReviewTab, build_diff_tree_rows};
     use crate::domain::{
         PullRequestData, PullRequestDiffData, PullRequestDiffFile, PullRequestDiffFileStatus,
         PullRequestDiffRow, PullRequestDiffRowKind, PullRequestSummary,
@@ -1447,6 +1450,30 @@ mod tests {
         assert_eq!(review.selected_diff_file, 0);
         assert_eq!(review.selected_hunk, 0);
         assert_eq!(review.diff_scroll, 50);
+    }
+
+    #[test]
+    fn move_file_selection_jumps_to_first_hunk() {
+        let mut review = build_review_state();
+        let mut first = diff_file("alpha.rs");
+        let mut second = diff_file("beta.rs");
+        first.hunk_starts = vec![4, 20];
+        second.hunk_starts = vec![13, 44];
+
+        review.set_diff(PullRequestDiffData {
+            files: vec![first, second],
+        });
+        review.active_tab = ReviewTab::Diff;
+
+        review.move_down();
+        assert_eq!(review.selected_diff_file, 1);
+        assert_eq!(review.selected_hunk, 0);
+        assert_eq!(review.diff_scroll, 13);
+
+        review.move_up();
+        assert_eq!(review.selected_diff_file, 0);
+        assert_eq!(review.selected_hunk, 0);
+        assert_eq!(review.diff_scroll, 4);
     }
 
     #[test]

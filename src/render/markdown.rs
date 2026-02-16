@@ -105,9 +105,10 @@ impl MarkdownRenderer {
                     Event::End(TagEnd::CodeBlock) => {
                         let highlighted = self.syntax.highlight(&code.language, &code.content);
                         for mut line in highlighted {
-                            let mut prefixed = vec![Span::styled("  ", theme::dim())];
-                            prefixed.append(&mut line.spans);
-                            lines.push(prefixed);
+                            for span in &mut line.spans {
+                                span.style.bg = None;
+                            }
+                            lines.push(line.spans);
                         }
                         lines.push(Vec::new());
                         in_code_block = None;

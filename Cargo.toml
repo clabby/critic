@@ -11,6 +11,7 @@ harness = []
 anyhow = "1.0"
 clap = { version = "4.5.58", features = ["derive"] }
 crossterm = { version = "0.29", features = ["event-stream"] }
+dark-light = "1.1"
 fuzzy-matcher = "0.3"
 octocrab = "0.49.5"
 pulldown-cmark = "0.13"
