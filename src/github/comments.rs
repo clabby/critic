@@ -25,6 +25,18 @@ pub struct SubmitReviewComment {
     pub start_side: Option<pulls::Side>,
 }
 
+/// Request payload for submitting a pull request review.
+#[derive(Debug, Clone)]
+pub struct SubmitPullRequestReviewRequest<'a> {
+    pub owner: &'a str,
+    pub repo: &'a str,
+    pub pull_number: u64,
+    pub event: &'a str,
+    pub body: &'a str,
+    pub comments: &'a [SubmitReviewComment],
+    pub expected_head_sha: &'a str,
+}
+
 /// Errors for pull request comment loading and transformation.
 #[derive(Debug, Error)]
 pub enum PullRequestCommentsError {
@@ -189,7 +201,7 @@ pub async fn fetch_pull_request_data(
         }))
         .collect();
 
-    merged.sort_by(|a, b| a.0.cmp(&b.0));
+    merged.sort_by_key(|entry| entry.0);
 
     Ok(PullRequestData {
         owner: pull.owner.clone(),
@@ -271,14 +283,18 @@ mutation UnresolveReviewThread($threadId: ID!) {
 /// Submits a pull request review with `COMMENT`, `APPROVE`, or `REQUEST_CHANGES`.
 pub async fn submit_pull_request_review(
     client: &octocrab::Octocrab,
-    owner: &str,
-    repo: &str,
-    pull_number: u64,
-    event: &str,
-    body: &str,
-    comments: &[SubmitReviewComment],
-    expected_head_sha: &str,
+    request: SubmitPullRequestReviewRequest<'_>,
 ) -> Result<()> {
+    let SubmitPullRequestReviewRequest {
+        owner,
+        repo,
+        pull_number,
+        event,
+        body,
+        comments,
+        expected_head_sha,
+    } = request;
+
     let event = match event {
         "COMMENT" => pulls::ReviewAction::Comment,
         "APPROVE" => pulls::ReviewAction::Approve,

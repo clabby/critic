@@ -55,6 +55,15 @@ struct DataContext {
     repo: Option<String>,
 }
 
+struct EventLoopDependencies<'a> {
+    context: &'a DataContext,
+    config: &'a AppConfig,
+    tx: &'a WorkerTx,
+    rx: &'a mut UnboundedReceiver<WorkerMessage>,
+    markdown: &'a mut MarkdownRenderer,
+    draft_store: Option<&'a DraftStore>,
+}
+
 /// Runs the interactive TUI application.
 pub async fn run(config: AppConfig) -> anyhow::Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<WorkerMessage>();
@@ -101,34 +110,27 @@ pub async fn run(config: AppConfig) -> anyhow::Result<()> {
     let mut markdown = MarkdownRenderer::new();
     let _ = markdown.set_ocean_theme(config.initial_theme_mode);
 
-    let result = run_event_loop(
-        &mut terminal,
-        &mut state,
-        &context,
-        &config,
-        &tx,
-        &mut rx,
-        &mut markdown,
-        draft_store.as_ref(),
-    )
-    .await;
+    let mut deps = EventLoopDependencies {
+        context: &context,
+        config: &config,
+        tx: &tx,
+        rx: &mut rx,
+        markdown: &mut markdown,
+        draft_store: draft_store.as_ref(),
+    };
+    let result = run_event_loop(&mut terminal, &mut state, &mut deps);
 
     restore_terminal(&mut terminal)?;
     result
 }
 
-async fn run_event_loop(
+fn run_event_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     state: &mut AppState,
-    context: &DataContext,
-    config: &AppConfig,
-    tx: &WorkerTx,
-    rx: &mut UnboundedReceiver<WorkerMessage>,
-    markdown: &mut MarkdownRenderer,
-    draft_store: Option<&DraftStore>,
+    deps: &mut EventLoopDependencies<'_>,
 ) -> anyhow::Result<()> {
-    let mut active_theme_mode = config.initial_theme_mode;
-    let mut active_terminal_background = config.initial_terminal_background;
+    let mut active_theme_mode = deps.config.initial_theme_mode;
+    let mut active_terminal_background = deps.config.initial_terminal_background;
     let mut last_theme_poll = Instant::now();
     let mut last_user_input = Instant::now();
     let mut last_error_snapshot: Option<String> = None;
@@ -138,22 +140,20 @@ async fn run_event_loop(
     loop {
         state.advance_spinner();
 
-        while let Ok(message) = rx.try_recv() {
+        while let Ok(message) = deps.rx.try_recv() {
             process_worker_message(
                 state,
                 message,
-                markdown,
-                context,
-                tx,
-                draft_store,
+                deps.markdown,
+                deps.context,
+                deps.tx,
+                deps.draft_store,
                 &mut last_persisted_draft_signature,
             );
-            maybe_spawn_search_load(state, context, tx);
-            load_active_diff_if_needed(state, tx);
-            if let Some(store) = draft_store {
-                // Persist immediately after worker-driven mutations (for example submit review).
-                persist_review_drafts(state, store, &mut last_persisted_draft_signature);
-            }
+            maybe_spawn_search_load(state, deps.context, deps.tx);
+            load_active_diff_if_needed(state, deps.tx);
+            // Persist immediately after worker-driven mutations (for example submit review).
+            persist_drafts_if_enabled(state, deps.draft_store, &mut last_persisted_draft_signature);
         }
 
         if state.error_message != last_error_snapshot {
@@ -170,19 +170,17 @@ async fn run_event_loop(
         if last_theme_poll.elapsed() >= Duration::from_secs(1) {
             last_theme_poll = Instant::now();
             maybe_refresh_theme(
-                config,
-                markdown,
+                deps.config,
+                deps.markdown,
                 &mut active_theme_mode,
                 &mut active_terminal_background,
                 last_user_input.elapsed(),
             );
         }
 
-        if let Some(store) = draft_store {
-            persist_review_drafts(state, store, &mut last_persisted_draft_signature);
-        }
+        persist_drafts_if_enabled(state, deps.draft_store, &mut last_persisted_draft_signature);
 
-        terminal.draw(|frame| ui::render(frame, state, markdown))?;
+        terminal.draw(|frame| ui::render(frame, state, deps.markdown))?;
 
         if state.should_quit {
             break;
@@ -193,11 +191,13 @@ async fn run_event_loop(
                 Event::Key(key_event) => {
                     if key_event.kind == KeyEventKind::Press {
                         last_user_input = Instant::now();
-                        handle_key_event(terminal, state, context, tx, key_event);
-                        if let Some(store) = draft_store {
-                            // Persist immediately after key-driven mutations (create/edit/delete).
-                            persist_review_drafts(state, store, &mut last_persisted_draft_signature);
-                        }
+                        handle_key_event(terminal, state, deps.context, deps.tx, key_event);
+                        // Persist immediately after key-driven mutations (create/edit/delete).
+                        persist_drafts_if_enabled(
+                            state,
+                            deps.draft_store,
+                            &mut last_persisted_draft_signature,
+                        );
                     }
                 }
                 Event::Mouse(mouse_event) => {
@@ -210,6 +210,17 @@ async fn run_event_loop(
     }
 
     Ok(())
+}
+
+fn persist_drafts_if_enabled(
+    state: &mut AppState,
+    draft_store: Option<&DraftStore>,
+    last_persisted_draft_signature: &mut Option<String>,
+) {
+    let Some(store) = draft_store else {
+        return;
+    };
+    persist_review_drafts(state, store, last_persisted_draft_signature);
 }
 
 fn process_worker_message(
@@ -615,19 +626,25 @@ fn handle_review_key_event(
         return;
     }
 
-    if active_tab == ReviewTab::Diff && key.modifiers.contains(KeyModifiers::CONTROL) {
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
         match key.code {
             KeyCode::Char('d') => {
-                if let Some(review) = state.review.as_mut() {
+                if let Some(review) = state.review.as_mut()
+                    && (review.active_tab() == ReviewTab::Threads
+                        || review.is_diff_content_focused())
+                {
                     review.fast_scroll_down();
+                    return;
                 }
-                return;
             }
             KeyCode::Char('u') => {
-                if let Some(review) = state.review.as_mut() {
+                if let Some(review) = state.review.as_mut()
+                    && (review.active_tab() == ReviewTab::Threads
+                        || review.is_diff_content_focused())
+                {
                     review.fast_scroll_up();
+                    return;
                 }
-                return;
             }
             _ => {}
         }
@@ -662,13 +679,13 @@ fn handle_review_key_event(
             if is_visual_mode {
                 return;
             }
-            if let Some(review) = state.review.as_mut() {
-                if review.active_tab() == ReviewTab::Diff {
-                    if review.is_diff_content_focused() {
-                        review.focus_diff_files();
-                    } else {
-                        review.focus_diff_content();
-                    }
+            if let Some(review) = state.review.as_mut()
+                && review.active_tab() == ReviewTab::Diff
+            {
+                if review.is_diff_content_focused() {
+                    review.focus_diff_files();
+                } else {
+                    review.focus_diff_content();
                 }
             }
         }
@@ -699,7 +716,7 @@ fn handle_review_key_event(
                 review.move_up();
             }
         }
-        KeyCode::Char('o') | KeyCode::Char('z') => {
+        KeyCode::Char('o' | 'z') => {
             if let Some(review) = state.review.as_mut() {
                 if active_tab == ReviewTab::Threads {
                     review.toggle_selected_thread_collapsed();
@@ -708,7 +725,7 @@ fn handle_review_key_event(
                 }
             }
         }
-        KeyCode::Char('n') | KeyCode::Char(']') => {
+        KeyCode::Char('n' | ']') => {
             if active_tab == ReviewTab::Diff
                 && !is_visual_mode
                 && let Some(review) = state.review.as_mut()
@@ -717,7 +734,7 @@ fn handle_review_key_event(
                 review.jump_next_hunk();
             }
         }
-        KeyCode::Char('N') | KeyCode::Char('[') => {
+        KeyCode::Char('N' | '[') => {
             if active_tab == ReviewTab::Diff
                 && !is_visual_mode
                 && let Some(review) = state.review.as_mut()

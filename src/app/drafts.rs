@@ -5,6 +5,7 @@ use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
+use std::fmt::Write;
 use std::fs;
 use std::path::PathBuf;
 
@@ -118,7 +119,8 @@ impl DraftStore {
             review.pending_review_comments().len()
         );
         for comment in review.pending_review_comments() {
-            signature.push_str(&format!(
+            let _ = write!(
+                signature,
                 "{}:{}:{:?}:{}:{:?}:{}|",
                 comment.id,
                 comment.path,
@@ -126,12 +128,12 @@ impl DraftStore {
                 comment.line,
                 comment.start_line,
                 comment.body
-            ));
+            );
         }
         let mut reply_entries = review.reply_drafts.iter().collect::<Vec<_>>();
-        reply_entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+        reply_entries.sort_by_key(|(left, _)| *left);
         for (key, value) in reply_entries {
-            signature.push_str(&format!("{key}:{value}|"));
+            let _ = write!(signature, "{key}:{value}|");
         }
         signature
     }

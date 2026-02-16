@@ -1,19 +1,33 @@
 set positional-arguments
 
+# default recipe to display help information
 default:
   @just --list
 
-check:
-  cargo check
+# Fixes the formatting of the workspace
+fmt-fix:
+  cargo +nightly fmt --all
 
-test:
-  cargo test
+# Check the formatting of the workspace
+fmt-check:
+  cargo +nightly fmt --all -- --check
 
-run *args='':
-  cargo run -- {{args}}
+# Lint the workspace
+lint: fmt-check
+  cargo +nightly clippy --workspace --all --all-features --all-targets -- -D warnings
 
+# Build the workspace
+build *args='':
+  cargo build --workspace --all $@
+
+# Run Rust tests
+test *args='':
+  cargo nextest run --workspace --all --all-features $@
+
+# Print the demo TUI
 demo:
   cargo run --features harness -- --demo
 
+# Run the harness dump
 harness *args='':
   cargo run --features harness -- --harness-dump {{args}}

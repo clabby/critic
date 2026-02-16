@@ -2,8 +2,8 @@
 
 use crate::domain::{PullRequestData, PullRequestDiffData, PullRequestSummary};
 use crate::github::comments::{
-    SubmitReviewComment, fetch_pull_request_data, reply_to_review_comment,
-    set_review_thread_resolved, submit_pull_request_review,
+    SubmitPullRequestReviewRequest, SubmitReviewComment, fetch_pull_request_data,
+    reply_to_review_comment, set_review_thread_resolved, submit_pull_request_review,
 };
 use crate::github::diff::fetch_pull_request_diff_data;
 use crate::github::pulls::{
@@ -213,13 +213,15 @@ pub fn spawn_apply_mutation(
             } => (
                 submit_pull_request_review(
                     &client,
-                    &owner,
-                    &repo,
-                    pull_number,
-                    &event,
-                    &body,
-                    &comments,
-                    &expected_head_sha,
+                    SubmitPullRequestReviewRequest {
+                        owner: &owner,
+                        repo: &repo,
+                        pull_number,
+                        event: &event,
+                        body: &body,
+                        comments: &comments,
+                        expected_head_sha: &expected_head_sha,
+                    },
                 )
                 .await
                 .map(|_| ()),

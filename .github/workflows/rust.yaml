@@ -1,0 +1,68 @@
+name: Rust
+on:
+  push:
+    branches: [main]
+  merge_group:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  cargo-tests:
+    runs-on: ubuntu-latest
+    name: Test
+    timeout-minutes: 20
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - uses: taiki-e/install-action@just
+      - uses: taiki-e/install-action@nextest
+      - name: cargo test
+        run: just test --locked
+
+  cargo-build:
+    runs-on: ubuntu-latest
+    name: Build
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - uses: taiki-e/install-action@just
+      - name: build
+        run: just build --locked
+
+  cargo-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    name: Lint
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: taiki-e/install-action@just
+      - name: Install Rust nightly toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: fmt + lint
+        run: just lint

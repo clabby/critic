@@ -38,7 +38,7 @@ pub fn rank_pull_requests(query: &str, pulls: &[PullRequestSummary]) -> Vec<Fuzz
         })
         .collect();
 
-    results.sort_by(|left, right| right.score.cmp(&left.score));
+    results.sort_by_key(|result| std::cmp::Reverse(result.score));
     results
 }
 

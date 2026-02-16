@@ -12,9 +12,9 @@ use std::time::Duration;
 const CONFIG_DIR: &str = ".critic";
 const CONFIG_FILE: &str = "config.toml";
 
-const DEFAULT_CONFIG_HEADER: &str = r##"# critic configuration
+const DEFAULT_CONFIG_HEADER: &str = r#"# critic configuration
 # Set `theme.mode` to one of: "auto", "dark", "light".
-"##;
+"#;
 
 /// Application configuration loaded from disk.
 #[derive(Debug, Clone)]
@@ -105,7 +105,7 @@ pub fn load_or_create() -> Result<AppConfig> {
 }
 
 fn parse_app_config(content: &str) -> Result<AppConfig> {
-    let raw: RawConfig = toml::from_str(&content).context("failed to parse config TOML")?;
+    let raw: RawConfig = toml::from_str(content).context("failed to parse config TOML")?;
     let theme_preference = match raw.theme.mode {
         Some(mode) => parse_theme_preference(mode.trim())
             .with_context(|| format!("invalid value for `theme.mode`: {mode}"))?,

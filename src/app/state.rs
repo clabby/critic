@@ -1,11 +1,16 @@
 //! Application state models and route-local behavior.
 
+mod diff_tree;
+mod thread_nodes;
+
+use self::diff_tree::{build_diff_tree_rows, filter_diff_tree_rows};
+use self::thread_nodes::{append_thread_nodes, is_review_group_key, review_group_key, thread_key};
 use crate::domain::{
     CommentRef, ListNode, ListNodeKind, PullRequestComment, PullRequestData, PullRequestDiffData,
-    PullRequestDiffFile, PullRequestSummary, ReviewThread, Route, review_comment_is_outdated,
+    PullRequestDiffFile, PullRequestSummary, ReviewThread, Route,
 };
 use crate::search::fuzzy::rank_pull_requests;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 /// Spinner frames used for active async operations.
 pub const SPINNER_FRAMES: [&str; 8] = ["⢎⡰", "⢎⡡", "⢎⡑", "⢎⠱", "⠎⡱", "⢊⡱", "⢌⡱", "⢆⡱"];
@@ -470,24 +475,7 @@ impl ReviewScreenState {
                 if self.diff_focus == DiffFocus::Content {
                     self.move_selected_diff_line_down();
                 } else {
-                    let Some((next_row, next_file)) = ({
-                        let rows = self.diff_tree_rows();
-                        if rows.is_empty() {
-                            None
-                        } else {
-                            let row = (self.selected_diff_row + 1).min(rows.len() - 1);
-                            Some((row, rows.get(row).and_then(|value| value.file_index)))
-                        }
-                    }) else {
-                        self.selected_diff_row = 0;
-                        self.selected_diff_file = 0;
-                        return;
-                    };
-
-                    self.selected_diff_row = next_row;
-                    if let Some(file_index) = next_file {
-                        self.set_selected_diff_file(file_index);
-                    }
+                    self.move_diff_tree_selection(NavDirection::Down);
                 }
             }
         }
@@ -508,24 +496,7 @@ impl ReviewScreenState {
                 if self.diff_focus == DiffFocus::Content {
                     self.move_selected_diff_line_up();
                 } else {
-                    let Some((next_row, next_file)) = ({
-                        let rows = self.diff_tree_rows();
-                        if rows.is_empty() {
-                            None
-                        } else {
-                            let row = self.selected_diff_row.saturating_sub(1);
-                            Some((row, rows.get(row).and_then(|value| value.file_index)))
-                        }
-                    }) else {
-                        self.selected_diff_row = 0;
-                        self.selected_diff_file = 0;
-                        return;
-                    };
-
-                    self.selected_diff_row = next_row;
-                    if let Some(file_index) = next_file {
-                        self.set_selected_diff_file(file_index);
-                    }
+                    self.move_diff_tree_selection(NavDirection::Up);
                 }
             }
         }
@@ -589,6 +560,9 @@ impl ReviewScreenState {
         self.rebuild_nodes();
     }
 
+    /// Replaces PR payload data while preserving route-local interaction state.
+    ///
+    /// Returns `true` when the pull request head SHA changed.
     pub fn set_data(&mut self, data: PullRequestData) -> bool {
         let head_changed = self.pull.head_sha != data.head_sha;
 
@@ -601,46 +575,30 @@ impl ReviewScreenState {
         head_changed
     }
 
+    /// Clears all loaded diff data and resets diff-focused interaction state.
     pub fn clear_diff(&mut self) {
         self.diff = None;
         self.diff_error = None;
-        self.diff_focus = DiffFocus::Files;
-        self.selected_diff_row = 0;
-        self.selected_diff_file = 0;
-        self.selected_diff_line = 0;
-        self.diff_selection_anchor = None;
-        self.diff_scroll = 0;
-        self.pending_preview_scroll = 0;
-        self.pending_preview_comment_id = None;
-        self.selected_hunk = 0;
-        self.diff_viewport_height = 0;
-        self.diff_collapsed_dirs.clear();
-        self.diff_search_focused = false;
-        self.diff_tree_rows_cache.clear();
+        self.reset_diff_view_state();
     }
 
+    /// Sets the loaded diff payload and transitions to a fresh diff browsing state.
     pub fn set_diff(&mut self, diff: PullRequestDiffData) {
         self.diff = Some(diff);
         self.diff_error = None;
-        self.diff_focus = DiffFocus::Files;
-        self.selected_diff_file = 0;
-        self.selected_diff_row = 0;
-        self.selected_diff_line = 0;
-        self.diff_selection_anchor = None;
-        self.diff_scroll = 0;
-        self.pending_preview_scroll = 0;
-        self.pending_preview_comment_id = None;
-        self.selected_hunk = 0;
-        self.diff_viewport_height = 0;
-        self.diff_collapsed_dirs.clear();
-        self.diff_search_focused = false;
+        self.reset_diff_view_state();
         self.recompute_diff_tree_rows_cache();
         self.select_initial_diff_file_row();
     }
 
+    /// Stores a diff loading error and resets diff browsing selections.
     pub fn set_diff_error(&mut self, error: String) {
         self.diff = None;
         self.diff_error = Some(error);
+        self.reset_diff_view_state();
+    }
+
+    fn reset_diff_view_state(&mut self) {
         self.diff_focus = DiffFocus::Files;
         self.selected_diff_row = 0;
         self.selected_diff_file = 0;
@@ -1034,10 +992,7 @@ impl ReviewScreenState {
                 let Some(line) = row_line_for_side(&file.rows[row_index], comment.side) else {
                     return false;
                 };
-                let line = line as u64;
-                let start = comment.start_line.unwrap_or(comment.line).min(comment.line);
-                let end = comment.start_line.unwrap_or(comment.line).max(comment.line);
-                line >= start && line <= end
+                pending_comment_contains_line(comment, line as u64)
             })
             .collect()
     }
@@ -1062,10 +1017,7 @@ impl ReviewScreenState {
             let Some(line) = row_line_for_side(row, comment.side) else {
                 return false;
             };
-            let line = line as u64;
-            let start = comment.start_line.unwrap_or(comment.line).min(comment.line);
-            let end = comment.start_line.unwrap_or(comment.line).max(comment.line);
-            line >= start && line <= end
+            pending_comment_contains_line(comment, line as u64)
         })
     }
 
@@ -1335,34 +1287,36 @@ impl ReviewScreenState {
     }
 
     pub fn fast_scroll_down(&mut self) {
-        if self.active_tab != ReviewTab::Diff {
-            return;
-        }
-        if self.diff_focus == DiffFocus::Content {
-            let steps = (usize::from(self.diff_viewport_height.max(2)) / 2).max(1);
-            for _ in 0..steps {
-                self.move_selected_diff_line_down();
-            }
-        } else {
+        if self.active_tab == ReviewTab::Threads {
             for _ in 0..10 {
                 self.move_down();
             }
+            return;
+        }
+        if self.active_tab != ReviewTab::Diff || self.diff_focus != DiffFocus::Content {
+            return;
+        }
+
+        let steps = (usize::from(self.diff_viewport_height.max(2)) / 2).max(1);
+        for _ in 0..steps {
+            self.move_selected_diff_line_down();
         }
     }
 
     pub fn fast_scroll_up(&mut self) {
-        if self.active_tab != ReviewTab::Diff {
-            return;
-        }
-        if self.diff_focus == DiffFocus::Content {
-            let steps = (usize::from(self.diff_viewport_height.max(2)) / 2).max(1);
-            for _ in 0..steps {
-                self.move_selected_diff_line_up();
-            }
-        } else {
+        if self.active_tab == ReviewTab::Threads {
             for _ in 0..10 {
                 self.move_up();
             }
+            return;
+        }
+        if self.active_tab != ReviewTab::Diff || self.diff_focus != DiffFocus::Content {
+            return;
+        }
+
+        let steps = (usize::from(self.diff_viewport_height.max(2)) / 2).max(1);
+        for _ in 0..steps {
+            self.move_selected_diff_line_up();
         }
     }
 
@@ -1406,6 +1360,34 @@ impl ReviewScreenState {
 
     pub fn set_diff_viewport_height(&mut self, height: u16) {
         self.diff_viewport_height = height.max(1);
+    }
+
+    fn move_diff_tree_selection(&mut self, direction: NavDirection) {
+        let Some((next_row, next_file)) = ({
+            let rows = self.diff_tree_rows();
+            if rows.is_empty() {
+                None
+            } else {
+                let row = match direction {
+                    NavDirection::Down => (self.selected_diff_row + 1).min(rows.len() - 1),
+                    NavDirection::Up => self.selected_diff_row.saturating_sub(1),
+                };
+                Some((row, rows.get(row).and_then(|value| value.file_index)))
+            }
+        }) else {
+            self.reset_diff_tree_selection();
+            return;
+        };
+
+        self.selected_diff_row = next_row;
+        if let Some(file_index) = next_file {
+            self.set_selected_diff_file(file_index);
+        }
+    }
+
+    fn reset_diff_tree_selection(&mut self) {
+        self.selected_diff_row = 0;
+        self.selected_diff_file = 0;
     }
 
     fn set_selected_diff_file(&mut self, file_index: usize) {
@@ -1457,12 +1439,7 @@ impl ReviewScreenState {
                 }
             }
         }) else {
-            self.selected_diff_row = 0;
-            self.selected_diff_file = 0;
-            self.diff_scroll = 0;
-            self.selected_hunk = 0;
-            self.selected_diff_line = 0;
-            self.diff_selection_anchor = None;
+            self.clear_active_diff_file_selection();
             return;
         };
 
@@ -1470,13 +1447,17 @@ impl ReviewScreenState {
         if let Some(file_index) = file_index {
             self.set_selected_diff_file(file_index);
         } else {
-            self.selected_diff_row = 0;
-            self.selected_diff_file = 0;
-            self.diff_scroll = 0;
-            self.selected_hunk = 0;
-            self.selected_diff_line = 0;
-            self.diff_selection_anchor = None;
+            self.clear_active_diff_file_selection();
         }
+    }
+
+    fn clear_active_diff_file_selection(&mut self) {
+        self.selected_diff_row = 0;
+        self.selected_diff_file = 0;
+        self.diff_scroll = 0;
+        self.selected_hunk = 0;
+        self.selected_diff_line = 0;
+        self.diff_selection_anchor = None;
     }
 
     fn select_initial_diff_file_row(&mut self) {
@@ -1718,6 +1699,11 @@ fn pending_comment_bounds(line: u64, start_line: Option<u64>) -> (u64, u64) {
     (start, end)
 }
 
+fn pending_comment_contains_line(comment: &PendingReviewCommentDraft, line: u64) -> bool {
+    let (start, end) = pending_comment_bounds(comment.line, comment.start_line);
+    line >= start && line <= end
+}
+
 fn pending_comment_matches_current_diff(
     diff: &crate::domain::PullRequestDiffData,
     comment: &PendingReviewCommentDraft,
@@ -1783,6 +1769,12 @@ enum Direction {
     Down,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum NavDirection {
+    Up,
+    Down,
+}
+
 fn next_commentable_row(
     rows: &[crate::domain::PullRequestDiffRow],
     from: usize,
@@ -1813,249 +1805,6 @@ fn is_commentable_diff_row(
         return false;
     }
     row_line_for_side(row, side).is_some()
-}
-
-fn append_reply_nodes(
-    nodes: &mut Vec<ListNode>,
-    thread: &ReviewThread,
-    depth: usize,
-    root_key: &str,
-) {
-    for reply in &thread.replies {
-        nodes.push(ListNode {
-            key: format!("reply:{}", reply.comment.id.into_inner()),
-            kind: ListNodeKind::Reply,
-            depth,
-            root_key: Some(root_key.to_owned()),
-            is_resolved: thread.is_resolved,
-            is_outdated: review_comment_is_outdated(&reply.comment),
-            comment: CommentRef::Review(reply.comment.clone()),
-        });
-
-        append_reply_nodes(nodes, reply, depth + 1, root_key);
-    }
-}
-
-fn append_thread_nodes(
-    nodes: &mut Vec<ListNode>,
-    threads_by_key: &mut HashMap<String, ReviewThread>,
-    collapsed: &HashSet<String>,
-    thread: &ReviewThread,
-    depth: usize,
-) {
-    let key = thread_key(thread);
-    threads_by_key.insert(key.clone(), thread.clone());
-
-    nodes.push(ListNode {
-        key: key.clone(),
-        kind: ListNodeKind::Thread,
-        depth,
-        root_key: Some(key.clone()),
-        is_resolved: thread.is_resolved,
-        is_outdated: review_comment_is_outdated(&thread.comment),
-        comment: CommentRef::Review(thread.comment.clone()),
-    });
-
-    if collapsed.contains(&key) {
-        return;
-    }
-
-    append_reply_nodes(nodes, thread, depth + 1, &key);
-}
-
-fn thread_key(thread: &ReviewThread) -> String {
-    match thread
-        .thread_id
-        .as_ref()
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-    {
-        Some(id) => format!("thread:{id}"),
-        None => format!("comment:{}", thread.comment.id.into_inner()),
-    }
-}
-
-fn review_group_key(review_id: u64) -> String {
-    format!("review-group:{review_id}")
-}
-
-fn is_review_group_key(key: &str) -> bool {
-    key.starts_with("review-group:")
-}
-
-#[derive(Debug, Default, Clone)]
-struct DiffTreeNode {
-    children: BTreeMap<String, DiffTreeNode>,
-    files: Vec<usize>,
-}
-
-fn build_diff_tree_rows(
-    diff: &PullRequestDiffData,
-    collapsed: &HashSet<String>,
-) -> Vec<DiffTreeRow> {
-    let mut root = DiffTreeNode::default();
-
-    for (index, file) in diff.files.iter().enumerate() {
-        insert_diff_path(&mut root, &file.path, index);
-    }
-    sort_diff_tree_files(&mut root, diff);
-
-    let mut rows = Vec::new();
-    append_diff_tree_rows(&root, "", 0, &mut rows, diff, collapsed);
-    rows
-}
-
-fn filter_diff_tree_rows(
-    rows: &[DiffTreeRow],
-    diff: &PullRequestDiffData,
-    query: &str,
-) -> Vec<DiffTreeRow> {
-    let query = query.trim().to_ascii_lowercase();
-    if query.is_empty() {
-        return rows.to_vec();
-    }
-
-    let mut include = HashSet::<String>::new();
-    let mut parent_stack = Vec::<String>::new();
-
-    for row in rows {
-        while parent_stack.len() > row.depth {
-            parent_stack.pop();
-        }
-
-        if row.is_directory {
-            parent_stack.push(row.key.clone());
-            continue;
-        }
-
-        let matches = row
-            .file_index
-            .and_then(|file_index| diff.files.get(file_index))
-            .map(|file| file.path.to_ascii_lowercase().contains(&query))
-            .unwrap_or(false);
-
-        if matches {
-            include.insert(row.key.clone());
-            for key in &parent_stack {
-                include.insert(key.clone());
-            }
-        }
-    }
-
-    rows.iter()
-        .filter(|row| include.contains(&row.key))
-        .cloned()
-        .map(|mut row| {
-            row.is_collapsed = false;
-            row
-        })
-        .collect()
-}
-
-fn insert_diff_path(root: &mut DiffTreeNode, path: &str, file_index: usize) {
-    let parts = path
-        .split('/')
-        .filter(|segment| !segment.is_empty())
-        .collect::<Vec<_>>();
-    if parts.is_empty() {
-        root.files.push(file_index);
-        return;
-    }
-
-    if parts.len() == 1 {
-        root.files.push(file_index);
-        return;
-    }
-
-    let mut node = root;
-    for segment in &parts[..parts.len() - 1] {
-        node = node.children.entry((*segment).to_owned()).or_default();
-    }
-    node.files.push(file_index);
-}
-
-fn sort_diff_tree_files(node: &mut DiffTreeNode, diff: &PullRequestDiffData) {
-    node.files
-        .sort_by(|a, b| diff.files[*a].path.cmp(&diff.files[*b].path));
-    for child in node.children.values_mut() {
-        sort_diff_tree_files(child, diff);
-    }
-}
-
-fn append_diff_tree_rows(
-    node: &DiffTreeNode,
-    parent_key: &str,
-    depth: usize,
-    rows: &mut Vec<DiffTreeRow>,
-    diff: &PullRequestDiffData,
-    collapsed: &HashSet<String>,
-) {
-    for (segment, child) in &node.children {
-        let (dir_label, dir_key, compressed) = compress_directory(parent_key, segment, child);
-        let is_collapsed = collapsed.contains(&dir_key);
-
-        rows.push(DiffTreeRow {
-            key: dir_key.clone(),
-            label: dir_label,
-            depth,
-            is_directory: true,
-            is_collapsed,
-            file_index: None,
-        });
-
-        if !is_collapsed {
-            append_diff_tree_rows(compressed, &dir_key, depth + 1, rows, diff, collapsed);
-        }
-    }
-
-    for file_index in &node.files {
-        let file = &diff.files[*file_index];
-        let label = file
-            .path
-            .rsplit('/')
-            .next()
-            .unwrap_or(file.path.as_str())
-            .to_owned();
-        rows.push(DiffTreeRow {
-            key: format!("file:{}", file.path),
-            label,
-            depth,
-            is_directory: false,
-            is_collapsed: false,
-            file_index: Some(*file_index),
-        });
-    }
-}
-
-fn compress_directory<'a>(
-    parent_key: &str,
-    initial_segment: &str,
-    initial_node: &'a DiffTreeNode,
-) -> (String, String, &'a DiffTreeNode) {
-    let mut label = initial_segment.to_owned();
-    let mut key = join_path(parent_key, initial_segment);
-    let mut node = initial_node;
-
-    while node.files.is_empty() && node.children.len() == 1 {
-        let Some((segment, next)) = node.children.iter().next() else {
-            break;
-        };
-        label.push('/');
-        label.push_str(segment);
-        key.push('/');
-        key.push_str(segment);
-        node = next;
-    }
-
-    (label, key, node)
-}
-
-fn join_path(parent: &str, segment: &str) -> String {
-    if parent.is_empty() {
-        segment.to_owned()
-    } else {
-        format!("{parent}/{segment}")
-    }
 }
 
 #[cfg(test)]
