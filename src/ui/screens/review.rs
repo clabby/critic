@@ -1,6 +1,6 @@
 //! Review screen renderer with tabs for threads and diffs.
 
-use crate::app::state::{AppState, ReviewScreenState, ReviewTab};
+use crate::app::state::{ReviewScreenState, ReviewTab};
 use crate::domain::{
     CommentRef, ListNodeKind, PullRequestDiffFile, PullRequestDiffFileStatus,
     PullRequestDiffHighlightRange, PullRequestDiffRowKind,
@@ -23,21 +23,9 @@ use ratatui::widgets::{
 pub fn render(
     frame: &mut Frame<'_>,
     area: Rect,
-    state: &AppState,
+    review: &mut ReviewScreenState,
     markdown: &mut MarkdownRenderer,
 ) {
-    let Some(review) = state.review.as_ref() else {
-        frame.render_widget(
-            Paragraph::new("No pull request selected.").block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(theme::border()),
-            ),
-            area,
-        );
-        return;
-    };
-
     let rows = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(area);
     render_tabs(frame, rows[0], review.active_tab());
 
@@ -83,7 +71,7 @@ fn render_threads_tab(
 fn render_diff_tab(
     frame: &mut Frame<'_>,
     area: Rect,
-    review: &ReviewScreenState,
+    review: &mut ReviewScreenState,
     markdown: &mut MarkdownRenderer,
 ) {
     let panes =
@@ -431,18 +419,12 @@ fn render_diff_files(frame: &mut Frame<'_>, area: Rect, review: &ReviewScreenSta
 fn render_diff_content(
     frame: &mut Frame<'_>,
     area: Rect,
-    review: &ReviewScreenState,
+    review: &mut ReviewScreenState,
     markdown: &mut MarkdownRenderer,
 ) {
     let title = review
         .selected_diff_file()
-        .map(|file| {
-            format!(
-                " Diff: {} [{}] ",
-                file.path,
-                markdown.current_syntax_theme_name()
-            )
-        })
+        .map(|file| format!(" Diff: {} ", file.path))
         .unwrap_or_else(|| " Diff ".to_owned());
     let block = Block::default()
         .title(Span::styled(title, theme::title()))
@@ -457,6 +439,7 @@ fn render_diff_content(
     } else {
         (inner, None)
     };
+    review.set_diff_viewport_height(text_area.height.max(1));
 
     let viewport_height = usize::from(text_area.height.max(1));
     let (lines, content_height, scroll) = if let Some(file) = review.selected_diff_file() {
@@ -567,56 +550,46 @@ fn render_diff_side(
     let visible_chars = text.chars().take(text_width).collect::<Vec<_>>();
     let visible_len = visible_chars.len();
     let base_fg = theme::text().fg.unwrap_or(Color::White);
+    let dim_fg = theme::dim().fg.unwrap_or(Color::DarkGray);
+    let add_fg = theme::diff_add().fg.unwrap_or(Color::Green);
+    let remove_fg = theme::diff_remove().fg.unwrap_or(Color::Red);
+    let modified_left_fg = theme::issue().fg.unwrap_or(Color::Yellow);
+    let modified_right_fg = add_fg;
+    let add_bg = theme::blend_with_terminal_bg(add_fg, 0.22);
+    let remove_bg = theme::blend_with_terminal_bg(remove_fg, 0.22);
+    let modified_left_bg = theme::blend_with_terminal_bg(modified_left_fg, 0.16);
+    let modified_right_bg = theme::blend_with_terminal_bg(modified_right_fg, 0.16);
+    let dim_bg = theme::blend_with_terminal_bg(dim_fg, 0.08);
     let (content_fg, content_bg, highlight_fg, highlight_bg) = match kind {
         PullRequestDiffRowKind::Context => (base_fg, None, base_fg, None),
         PullRequestDiffRowKind::Added => {
             if is_left {
-                (
-                    theme::dim().fg.unwrap_or(Color::DarkGray),
-                    Some(Color::Rgb(24, 24, 24)),
-                    theme::dim().fg.unwrap_or(Color::DarkGray),
-                    Some(Color::Rgb(24, 24, 24)),
-                )
+                (dim_fg, Some(dim_bg), dim_fg, Some(dim_bg))
             } else {
-                (
-                    Color::Rgb(172, 218, 170),
-                    Some(Color::Rgb(23, 42, 26)),
-                    Color::Rgb(172, 218, 170),
-                    Some(Color::Rgb(23, 42, 26)),
-                )
+                (add_fg, Some(add_bg), add_fg, Some(add_bg))
             }
         }
         PullRequestDiffRowKind::Removed => {
             if is_left {
-                (
-                    Color::Rgb(229, 161, 161),
-                    Some(Color::Rgb(52, 23, 25)),
-                    Color::Rgb(229, 161, 161),
-                    Some(Color::Rgb(52, 23, 25)),
-                )
+                (remove_fg, Some(remove_bg), remove_fg, Some(remove_bg))
             } else {
-                (
-                    theme::dim().fg.unwrap_or(Color::DarkGray),
-                    Some(Color::Rgb(24, 24, 24)),
-                    theme::dim().fg.unwrap_or(Color::DarkGray),
-                    Some(Color::Rgb(24, 24, 24)),
-                )
+                (dim_fg, Some(dim_bg), dim_fg, Some(dim_bg))
             }
         }
         PullRequestDiffRowKind::Modified => {
             if is_left {
                 (
                     base_fg,
-                    Some(Color::Rgb(24, 24, 24)),
-                    Color::Rgb(236, 193, 170),
-                    Some(Color::Rgb(58, 43, 35)),
+                    Some(modified_left_bg),
+                    modified_left_fg,
+                    Some(modified_left_bg),
                 )
             } else {
                 (
                     base_fg,
-                    Some(Color::Rgb(24, 24, 24)),
-                    Color::Rgb(194, 220, 194),
-                    Some(Color::Rgb(34, 48, 34)),
+                    Some(modified_right_bg),
+                    modified_right_fg,
+                    Some(modified_right_bg),
                 )
             }
         }
@@ -646,7 +619,7 @@ fn render_diff_side(
         let alignment_gap = line_number.is_none() && kind != PullRequestDiffRowKind::Context;
         let filler_style = if alignment_gap {
             Style::default()
-                .fg(Color::Rgb(57, 72, 114))
+                .fg(theme::diff_context().fg.unwrap_or(dim_fg))
                 .bg(content_bg.unwrap_or(Color::Reset))
         } else if kind == PullRequestDiffRowKind::Modified {
             highlight_style

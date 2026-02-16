@@ -1,12 +1,16 @@
 //! Fenced code highlighting via `tui-syntax-highlight` + `syntect`.
 
 use crate::ui::theme;
+use crate::ui::theme::ThemeMode;
 use ratatui::style::Color;
 use ratatui::text::{Line, Span};
 use syntect::highlighting::ThemeSet;
 use syntect::parsing::{SyntaxReference, SyntaxSet};
 use syntect::util::LinesWithEndings;
 use tui_syntax_highlight::Highlighter;
+
+const OCEAN_DARK_THEME: &str = "base16-ocean.dark";
+const OCEAN_LIGHT_THEME: &str = "base16-ocean.light";
 
 /// Syntax highlighter for fenced markdown code blocks.
 pub struct SyntaxHighlighter {
@@ -101,20 +105,19 @@ impl SyntaxHighlighter {
         true
     }
 
-    pub fn cycle_theme(&mut self) -> &str {
-        if self.theme_names.is_empty() {
-            return "unknown";
-        }
-        self.active_theme_index = (self.active_theme_index + 1) % self.theme_names.len();
-        self.rebuild_highlighter();
-        self.current_theme_name()
-    }
-
     pub fn current_theme_name(&self) -> &str {
         self.theme_names
             .get(self.active_theme_index)
             .map(String::as_str)
             .unwrap_or("unknown")
+    }
+
+    pub fn set_ocean_theme(&mut self, mode: ThemeMode) -> bool {
+        let name = match mode {
+            ThemeMode::Dark => OCEAN_DARK_THEME,
+            ThemeMode::Light => OCEAN_LIGHT_THEME,
+        };
+        self.set_theme(name)
     }
 
     fn rebuild_highlighter(&mut self) {
@@ -197,4 +200,32 @@ fn plain_code_lines(source: &str) -> Vec<Line<'static>> {
         .lines()
         .map(|line| Line::from(vec![Span::styled(line.to_owned(), theme::text())]))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SyntaxHighlighter;
+    use crate::ui::theme::ThemeMode;
+
+    #[test]
+    fn includes_ocean_light_theme() {
+        let highlighter = SyntaxHighlighter::new();
+        assert!(
+            highlighter
+                .theme_names
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case("base16-ocean.light")),
+            "available themes: {:?}",
+            highlighter.theme_names
+        );
+    }
+
+    #[test]
+    fn sets_ocean_theme_for_mode() {
+        let mut highlighter = SyntaxHighlighter::new();
+        assert!(highlighter.set_ocean_theme(ThemeMode::Light));
+        assert_eq!(highlighter.current_theme_name(), "base16-ocean.light");
+        assert!(highlighter.set_ocean_theme(ThemeMode::Dark));
+        assert_eq!(highlighter.current_theme_name(), "base16-ocean.dark");
+    }
 }

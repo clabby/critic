@@ -3,6 +3,7 @@
 use crate::domain::PullRequestDiffFile;
 use crate::render::syntax::SyntaxHighlighter;
 use crate::ui::theme;
+use crate::ui::theme::ThemeMode;
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -49,13 +50,15 @@ impl MarkdownRenderer {
         changed
     }
 
-    pub fn cycle_syntax_theme(&mut self) -> &str {
-        let name = self.syntax.cycle_theme();
-        self.diff_cache.clear();
-        name
+    pub fn set_ocean_theme(&mut self, mode: ThemeMode) -> bool {
+        let changed = self.syntax.set_ocean_theme(mode);
+        if changed {
+            self.diff_cache.clear();
+        }
+        changed
     }
 
-    pub fn current_syntax_theme_name(&self) -> &str {
+    fn current_syntax_theme_name(&self) -> &str {
         self.syntax.current_theme_name()
     }
 

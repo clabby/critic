@@ -30,7 +30,7 @@ fn render_demo_search(width: u16, height: u16) -> anyhow::Result<String> {
 
     state.set_repository_label(label);
     state.set_pull_requests(pulls);
-    render_state_to_string(&state, width, height)
+    render_state_to_string(&mut state, width, height)
 }
 
 fn render_demo_review(width: u16, height: u16) -> anyhow::Result<String> {
@@ -45,10 +45,10 @@ fn render_demo_review(width: u16, height: u16) -> anyhow::Result<String> {
     state.set_pull_requests(pulls);
     state.open_review(pull.clone(), fixtures::demo_pull_request_data_for(&pull));
     state.route = Route::Review;
-    render_state_to_string(&state, width, height)
+    render_state_to_string(&mut state, width, height)
 }
 
-fn render_state_to_string(state: &AppState, width: u16, height: u16) -> anyhow::Result<String> {
+fn render_state_to_string(state: &mut AppState, width: u16, height: u16) -> anyhow::Result<String> {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).context("failed to create test terminal")?;
     let mut markdown = MarkdownRenderer::new();

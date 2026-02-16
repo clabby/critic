@@ -1,55 +1,92 @@
 //! User configuration loading from `~/.critic/config.toml`.
 
-use crate::ui::theme::ThemePalette;
+use crate::ui::theme::{ThemeMode, ThemePalette};
 use anyhow::{Context, Result, anyhow};
-use ratatui::style::Color;
-use serde::Deserialize;
+use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::terminal;
+use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
+use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 const CONFIG_DIR: &str = ".critic";
 const CONFIG_FILE: &str = "config.toml";
 
-const DEFAULT_CONFIG_TOML: &str = r##"# critic configuration
-# Colors accept `#RRGGBB` or named ANSI colors (e.g. "yellow", "dark_gray").
-
-[theme]
-border = "#c47832"
-title = "#ebaa5a"
-dim = "dark_gray"
-text = "#d2d2c8"
-selected_fg = "black"
-selected_bg = "#e2b45c"
-issue = "#e7b258"
-open_thread = "yellow"
-resolved_thread = "green"
-error = "red"
-info = "cyan"
-link = "cyan"
-inline_code_fg = "yellow"
-inline_code_bg = "#282828"
-section_title = "light_yellow"
-author = "light_blue"
-outdated = "yellow"
-diff_header = "cyan"
-diff_add = "green"
-diff_remove = "red"
-diff_context = "#bebeb4"
-gauge_label = "black"
-gauge_fill = "#f5cd52"
-gauge_empty = "#5e501e"
-code_padding_fg = "black"
-
-[syntax]
-theme = "base16-ocean.dark"
+const DEFAULT_CONFIG_HEADER: &str = r##"# critic configuration
+# Set `theme.mode` to one of: "auto", "dark", "light".
 "##;
 
 /// Application configuration loaded from disk.
 #[derive(Debug, Clone)]
 pub struct AppConfig {
-    pub theme: ThemePalette,
-    pub syntax_theme: String,
+    pub theme_preference: ThemePreference,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            theme_preference: ThemePreference::Auto,
+        }
+    }
+}
+
+/// Preferred theme mode from config.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ThemePreference {
+    Auto,
+    Dark,
+    Light,
+}
+
+/// Runtime theme selection after resolving `auto` mode.
+#[derive(Debug, Clone)]
+pub struct RuntimeThemeConfig {
+    pub palette: ThemePalette,
+    pub mode: ThemeMode,
+}
+
+/// Terminal theme sample from runtime detection.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct TerminalThemeSample {
+    pub mode: ThemeMode,
+    pub background_rgb: Option<(u8, u8, u8)>,
+}
+
+impl AppConfig {
+    /// Resolves the effective runtime UI theme.
+    pub fn resolve_runtime_theme(&self) -> RuntimeThemeConfig {
+        let mode = match self.theme_preference {
+            ThemePreference::Auto => detect_terminal_theme_mode().unwrap_or(ThemeMode::Dark),
+            ThemePreference::Dark => ThemeMode::Dark,
+            ThemePreference::Light => ThemeMode::Light,
+        };
+
+        self.resolve_runtime_theme_for_mode(mode)
+    }
+
+    /// Builds a runtime theme for a specific mode.
+    pub fn resolve_runtime_theme_for_mode(&self, mode: ThemeMode) -> RuntimeThemeConfig {
+        match mode {
+            ThemeMode::Dark => RuntimeThemeConfig {
+                palette: ThemePalette::default(),
+                mode,
+            },
+            ThemeMode::Light => RuntimeThemeConfig {
+                palette: ThemePalette::light_default(),
+                mode,
+            },
+        }
+    }
+
+    fn to_persisted_config(&self) -> PersistedConfig {
+        PersistedConfig {
+            theme: PersistedThemeConfig {
+                mode: theme_preference_to_string(self.theme_preference).to_owned(),
+            },
+        }
+    }
 }
 
 /// Returns the config file path and creates default config if missing.
@@ -65,14 +102,19 @@ pub fn load_or_create() -> Result<AppConfig> {
     let content = fs::read_to_string(&path)
         .with_context(|| format!("failed to read config file at {}", path.display()))?;
 
-    let raw: RawConfig = toml::from_str(&content)
-        .with_context(|| format!("failed to parse TOML in {}", path.display()))?;
-    let theme = raw.theme.into_theme()?;
+    parse_app_config(&content)
+        .with_context(|| format!("failed to parse TOML in {}", path.display()))
+}
 
-    Ok(AppConfig {
-        theme,
-        syntax_theme: raw.syntax.theme.unwrap_or_else(default_syntax_theme),
-    })
+fn parse_app_config(content: &str) -> Result<AppConfig> {
+    let raw: RawConfig = toml::from_str(&content).context("failed to parse config TOML")?;
+    let theme_preference = match raw.theme.mode {
+        Some(mode) => parse_theme_preference(mode.trim())
+            .with_context(|| format!("invalid value for `theme.mode`: {mode}"))?,
+        None => ThemePreference::Auto,
+    };
+
+    Ok(AppConfig { theme_preference })
 }
 
 fn config_path() -> Result<PathBuf> {
@@ -91,204 +133,505 @@ fn ensure_default_config(path: &Path) -> Result<()> {
         .ok_or_else(|| anyhow!("invalid config path: {}", path.display()))?;
     fs::create_dir_all(dir)
         .with_context(|| format!("failed to create config directory {}", dir.display()))?;
-    fs::write(path, DEFAULT_CONFIG_TOML)
+    let default_toml = build_default_config_toml()?;
+    fs::write(path, default_toml)
         .with_context(|| format!("failed to write default config file {}", path.display()))?;
     Ok(())
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
+#[serde(deny_unknown_fields)]
 struct RawConfig {
-    theme: RawTheme,
-    syntax: RawSyntax,
+    theme: RawThemeConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
-struct RawTheme {
-    border: Option<String>,
-    title: Option<String>,
-    dim: Option<String>,
-    text: Option<String>,
-    selected_fg: Option<String>,
-    selected_bg: Option<String>,
-    issue: Option<String>,
-    open_thread: Option<String>,
-    resolved_thread: Option<String>,
-    error: Option<String>,
-    info: Option<String>,
-    link: Option<String>,
-    inline_code_fg: Option<String>,
-    inline_code_bg: Option<String>,
-    section_title: Option<String>,
-    author: Option<String>,
-    outdated: Option<String>,
-    diff_header: Option<String>,
-    diff_add: Option<String>,
-    diff_remove: Option<String>,
-    diff_context: Option<String>,
-    gauge_label: Option<String>,
-    gauge_fill: Option<String>,
-    gauge_empty: Option<String>,
-    code_padding_fg: Option<String>,
+#[serde(deny_unknown_fields)]
+struct RawThemeConfig {
+    mode: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(default)]
-struct RawSyntax {
-    theme: Option<String>,
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct PersistedConfig {
+    theme: PersistedThemeConfig,
 }
 
-impl RawTheme {
-    fn into_theme(self) -> Result<ThemePalette> {
-        let defaults = ThemePalette::default();
-
-        Ok(ThemePalette {
-            border: parse_or_default(self.border, defaults.border, "theme.border")?,
-            title: parse_or_default(self.title, defaults.title, "theme.title")?,
-            dim: parse_or_default(self.dim, defaults.dim, "theme.dim")?,
-            text: parse_or_default(self.text, defaults.text, "theme.text")?,
-            selected_fg: parse_or_default(
-                self.selected_fg,
-                defaults.selected_fg,
-                "theme.selected_fg",
-            )?,
-            selected_bg: parse_or_default(
-                self.selected_bg,
-                defaults.selected_bg,
-                "theme.selected_bg",
-            )?,
-            issue: parse_or_default(self.issue, defaults.issue, "theme.issue")?,
-            open_thread: parse_or_default(
-                self.open_thread,
-                defaults.open_thread,
-                "theme.open_thread",
-            )?,
-            resolved_thread: parse_or_default(
-                self.resolved_thread,
-                defaults.resolved_thread,
-                "theme.resolved_thread",
-            )?,
-            error: parse_or_default(self.error, defaults.error, "theme.error")?,
-            info: parse_or_default(self.info, defaults.info, "theme.info")?,
-            link: parse_or_default(self.link, defaults.link, "theme.link")?,
-            inline_code_fg: parse_or_default(
-                self.inline_code_fg,
-                defaults.inline_code_fg,
-                "theme.inline_code_fg",
-            )?,
-            inline_code_bg: parse_or_default(
-                self.inline_code_bg,
-                defaults.inline_code_bg,
-                "theme.inline_code_bg",
-            )?,
-            section_title: parse_or_default(
-                self.section_title,
-                defaults.section_title,
-                "theme.section_title",
-            )?,
-            author: parse_or_default(self.author, defaults.author, "theme.author")?,
-            outdated: parse_or_default(self.outdated, defaults.outdated, "theme.outdated")?,
-            diff_header: parse_or_default(
-                self.diff_header,
-                defaults.diff_header,
-                "theme.diff_header",
-            )?,
-            diff_add: parse_or_default(self.diff_add, defaults.diff_add, "theme.diff_add")?,
-            diff_remove: parse_or_default(
-                self.diff_remove,
-                defaults.diff_remove,
-                "theme.diff_remove",
-            )?,
-            diff_context: parse_or_default(
-                self.diff_context,
-                defaults.diff_context,
-                "theme.diff_context",
-            )?,
-            gauge_label: parse_or_default(
-                self.gauge_label,
-                defaults.gauge_label,
-                "theme.gauge_label",
-            )?,
-            gauge_fill: parse_or_default(self.gauge_fill, defaults.gauge_fill, "theme.gauge_fill")?,
-            gauge_empty: parse_or_default(
-                self.gauge_empty,
-                defaults.gauge_empty,
-                "theme.gauge_empty",
-            )?,
-            code_padding_fg: parse_or_default(
-                self.code_padding_fg,
-                defaults.code_padding_fg,
-                "theme.code_padding_fg",
-            )?,
-        })
-    }
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct PersistedThemeConfig {
+    mode: String,
 }
 
-fn parse_or_default(value: Option<String>, default: Color, field: &str) -> Result<Color> {
-    match value {
-        Some(raw) => parse_color(raw.trim())
-            .with_context(|| format!("invalid color value for `{field}`: {raw}")),
-        None => Ok(default),
-    }
-}
-
-fn parse_color(raw: &str) -> Result<Color> {
-    if let Some(hex) = raw.strip_prefix('#') {
-        if hex.len() != 6 {
-            return Err(anyhow!("hex colors must be in #RRGGBB format"));
-        }
-        let red = u8::from_str_radix(&hex[0..2], 16).context("invalid red hex channel")?;
-        let green = u8::from_str_radix(&hex[2..4], 16).context("invalid green hex channel")?;
-        let blue = u8::from_str_radix(&hex[4..6], 16).context("invalid blue hex channel")?;
-        return Ok(Color::Rgb(red, green, blue));
-    }
-
+fn parse_theme_preference(raw: &str) -> Result<ThemePreference> {
     let normalized = raw.trim().to_ascii_lowercase().replace(['-', ' '], "_");
-    let color = match normalized.as_str() {
-        "reset" => Color::Reset,
-        "black" => Color::Black,
-        "red" => Color::Red,
-        "green" => Color::Green,
-        "yellow" => Color::Yellow,
-        "blue" => Color::Blue,
-        "magenta" => Color::Magenta,
-        "cyan" => Color::Cyan,
-        "gray" | "grey" => Color::Gray,
-        "dark_gray" | "dark_grey" => Color::DarkGray,
-        "light_red" => Color::LightRed,
-        "light_green" => Color::LightGreen,
-        "light_yellow" => Color::LightYellow,
-        "light_blue" => Color::LightBlue,
-        "light_magenta" => Color::LightMagenta,
-        "light_cyan" => Color::LightCyan,
-        "white" => Color::White,
-        _ => return Err(anyhow!("unsupported color format")),
+    match normalized.as_str() {
+        "auto" => Ok(ThemePreference::Auto),
+        "dark" => Ok(ThemePreference::Dark),
+        "light" => Ok(ThemePreference::Light),
+        _ => Err(anyhow!("expected one of: auto, dark, light")),
+    }
+}
+
+fn build_default_config_toml() -> Result<String> {
+    let default = AppConfig::default().to_persisted_config();
+    let serialized =
+        toml::to_string_pretty(&default).context("failed to serialize default config")?;
+    Ok(format!("{DEFAULT_CONFIG_HEADER}\n\n{serialized}"))
+}
+
+fn theme_preference_to_string(value: ThemePreference) -> &'static str {
+    match value {
+        ThemePreference::Auto => "auto",
+        ThemePreference::Dark => "dark",
+        ThemePreference::Light => "light",
+    }
+}
+
+/// Detects terminal background mode using runtime probes with env fallbacks.
+pub fn detect_terminal_theme_mode() -> Option<ThemeMode> {
+    detect_terminal_theme_sample().map(|sample| sample.mode)
+}
+
+/// Detects terminal theme mode and (if available) terminal background RGB.
+pub fn detect_terminal_theme_sample() -> Option<TerminalThemeSample> {
+    detect_from_osc11_query(Duration::from_millis(450))
+        .or_else(detect_with_termbg_sample)
+        .or_else(|| {
+            detect_from_term_background_env().map(|mode| TerminalThemeSample {
+                mode,
+                background_rgb: None,
+            })
+        })
+        .or_else(detect_from_colorfgbg_sample)
+}
+
+/// Detects terminal background mode without active terminal probes.
+///
+/// This avoids writing query sequences or competing for stdin reads while the
+/// TUI event loop is running.
+pub fn detect_terminal_theme_mode_passive() -> Option<ThemeMode> {
+    detect_terminal_theme_sample_passive().map(|sample| sample.mode)
+}
+
+/// Passive terminal theme detection without active OSC probes.
+pub fn detect_terminal_theme_sample_passive() -> Option<TerminalThemeSample> {
+    detect_from_term_background_env()
+        .map(|mode| TerminalThemeSample {
+            mode,
+            background_rgb: None,
+        })
+        .or_else(detect_from_colorfgbg_sample)
+}
+
+/// Detects terminal background mode with a bounded live probe suitable for
+/// runtime polling while in TUI mode.
+pub fn detect_terminal_theme_mode_live(timeout: Duration) -> Option<ThemeMode> {
+    detect_terminal_theme_sample_live(timeout).map(|sample| sample.mode)
+}
+
+/// Runtime-safe terminal theme detection that can include terminal background RGB.
+pub fn detect_terminal_theme_sample_live(timeout: Duration) -> Option<TerminalThemeSample> {
+    detect_from_osc11_query(timeout)
+        .or_else(|| {
+            detect_from_term_background_env().map(|mode| TerminalThemeSample {
+                mode,
+                background_rgb: None,
+            })
+        })
+        .or_else(detect_from_colorfgbg_sample)
+}
+
+/// Detects terminal background RGB when available.
+pub fn detect_terminal_background_rgb() -> Option<(u8, u8, u8)> {
+    detect_terminal_theme_sample().and_then(|sample| sample.background_rgb)
+}
+
+/// Runtime-safe terminal background RGB detection.
+pub fn detect_terminal_background_rgb_live(timeout: Duration) -> Option<(u8, u8, u8)> {
+    detect_terminal_theme_sample_live(timeout).and_then(|sample| sample.background_rgb)
+}
+
+fn detect_with_termbg_sample() -> Option<TerminalThemeSample> {
+    match termbg::rgb(Duration::from_millis(900)) {
+        Ok(rgb) => {
+            let mode = theme_mode_from_rgb(rgb.r, rgb.g, rgb.b);
+            Some(TerminalThemeSample {
+                mode,
+                background_rgb: Some((
+                    scale_channel_u16_to_u8(rgb.r),
+                    scale_channel_u16_to_u8(rgb.g),
+                    scale_channel_u16_to_u8(rgb.b),
+                )),
+            })
+        }
+        _ => None,
+    }
+}
+
+fn detect_from_osc11_query(timeout: Duration) -> Option<TerminalThemeSample> {
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        return None;
+    }
+
+    let raw_before = terminal::is_raw_mode_enabled().ok().unwrap_or(false);
+    if !raw_before && terminal::enable_raw_mode().is_err() {
+        return None;
+    }
+
+    let probe = || -> Option<TerminalThemeSample> {
+        discard_pending_events();
+
+        let mut stdout = io::stdout();
+        let queries = if env::var_os("TMUX").is_some() {
+            [
+                "\x1bPtmux;\x1b\x1b]11;?\x1b\\\x1b\\",
+                "\x1bPtmux;\x1b\x1b]11;?\x07\x1b\\",
+                "\x1b]11;?\x07",
+                "\x1b]11;?\x1b\\",
+            ]
+        } else {
+            ["\x1b]11;?\x07", "\x1b]11;?\x1b\\", "", ""]
+        };
+
+        for query in queries {
+            if query.is_empty() {
+                continue;
+            }
+
+            if stdout.write_all(query.as_bytes()).is_err() || stdout.flush().is_err() {
+                return None;
+            }
+
+            if let Some(sample) = wait_for_osc11_response(timeout) {
+                return Some(sample);
+            }
+        }
+
+        None
     };
 
-    Ok(color)
+    let result = probe();
+    if !raw_before {
+        let _ = terminal::disable_raw_mode();
+    }
+    result
 }
 
-fn default_syntax_theme() -> String {
-    "base16-ocean.dark".to_owned()
+fn discard_pending_events() {
+    while event::poll(Duration::from_millis(0)).ok().unwrap_or(false) {
+        if event::read().is_err() {
+            break;
+        }
+    }
+}
+
+fn wait_for_osc11_response(timeout: Duration) -> Option<TerminalThemeSample> {
+    let start = Instant::now();
+    let mut response = String::with_capacity(128);
+
+    while start.elapsed() <= timeout {
+        if !event::poll(Duration::from_millis(20)).ok()? {
+            continue;
+        }
+
+        let Event::Key(key) = event::read().ok()? else {
+            continue;
+        };
+
+        match (key.code, key.modifiers) {
+            (KeyCode::Esc, _) => response.push('\x1b'),
+            (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                if is_likely_osc_char(c) {
+                    response.push(c);
+                } else {
+                    // Most likely real user input, abort this probe quickly.
+                    return None;
+                }
+            }
+            (KeyCode::Char('\\'), KeyModifiers::ALT) => response.push('\\'),
+            _ => {}
+        }
+
+        if let Some((r, g, b)) = parse_osc11_rgb(&response) {
+            drain_response_tail(Duration::from_millis(40));
+            return Some(TerminalThemeSample {
+                mode: theme_mode_from_rgb(r, g, b),
+                background_rgb: Some((
+                    scale_channel_u16_to_u8(r),
+                    scale_channel_u16_to_u8(g),
+                    scale_channel_u16_to_u8(b),
+                )),
+            });
+        }
+    }
+
+    None
+}
+
+fn drain_response_tail(max_duration: Duration) {
+    let start = Instant::now();
+    while start.elapsed() < max_duration {
+        if !event::poll(Duration::from_millis(0)).ok().unwrap_or(false) {
+            break;
+        }
+        if event::read().is_err() {
+            break;
+        }
+    }
+}
+
+fn is_likely_osc_char(c: char) -> bool {
+    c.is_ascii_hexdigit()
+        || matches!(c, '\u{0007}' | ':' | '/' | ';' | '?' | ']' | '\\')
+        || matches!(
+            c,
+            'r' | 'g' | 'b' | 'R' | 'G' | 'B' | 'P' | 't' | 'm' | 'u' | 'x'
+        )
+}
+
+fn parse_osc11_rgb(response: &str) -> Option<(u16, u16, u16)> {
+    let start = response.find("rgb:")? + 4;
+    let tail = &response[start..];
+    let mut channels: Vec<String> = Vec::with_capacity(3);
+    let mut current = String::new();
+
+    for ch in tail.chars() {
+        if ch.is_ascii_hexdigit() {
+            current.push(ch);
+            continue;
+        }
+        if ch == '/' {
+            if current.is_empty() {
+                return None;
+            }
+            channels.push(std::mem::take(&mut current));
+            if channels.len() > 3 {
+                break;
+            }
+            continue;
+        }
+        break;
+    }
+
+    if !current.is_empty() && channels.len() < 3 {
+        channels.push(current);
+    }
+    if channels.len() < 3 {
+        return None;
+    }
+
+    let r = parse_hex_channel_scaled(&channels[0])?;
+    let g = parse_hex_channel_scaled(&channels[1])?;
+    let b = parse_hex_channel_scaled(&channels[2])?;
+    Some((r, g, b))
+}
+
+fn parse_hex_channel_scaled(raw: &str) -> Option<u16> {
+    if raw.is_empty() || raw.len() > 4 {
+        return None;
+    }
+    let value = u16::from_str_radix(raw, 16).ok()?;
+    let bits = (raw.len() as u32) * 4;
+    if bits == 16 {
+        return Some(value);
+    }
+    let max = (1u32 << bits) - 1;
+    Some(((u32::from(value) * 65535) / max) as u16)
+}
+
+fn theme_mode_from_rgb(r: u16, g: u16, b: u16) -> ThemeMode {
+    let luma = f64::from(r) * 0.299 + f64::from(g) * 0.587 + f64::from(b) * 0.114;
+    if luma > 32768.0 {
+        ThemeMode::Light
+    } else {
+        ThemeMode::Dark
+    }
+}
+
+fn detect_from_term_background_env() -> Option<ThemeMode> {
+    for key in ["TERM_BACKGROUND", "TERMINAL_BACKGROUND"] {
+        let Ok(value) = env::var(key) else {
+            continue;
+        };
+        if let Some(mode) = parse_theme_mode_hint(&value) {
+            return Some(mode);
+        }
+    }
+
+    None
+}
+
+fn detect_from_colorfgbg_sample() -> Option<TerminalThemeSample> {
+    let bg_index = parse_colorfgbg_background_index()?;
+    let mode = if bg_index >= 7 {
+        ThemeMode::Light
+    } else {
+        ThemeMode::Dark
+    };
+    let background_rgb = ansi_256_to_rgb(bg_index);
+    Some(TerminalThemeSample {
+        mode,
+        background_rgb: Some(background_rgb),
+    })
+}
+
+fn parse_colorfgbg_background_index() -> Option<u8> {
+    let value = env::var("COLORFGBG").ok()?;
+    let raw_bg = value.rsplit(';').next()?.trim();
+    raw_bg.parse::<u8>().ok()
+}
+
+fn scale_channel_u16_to_u8(value: u16) -> u8 {
+    ((u32::from(value) * 255) / 65535) as u8
+}
+
+fn ansi_256_to_rgb(index: u8) -> (u8, u8, u8) {
+    const ANSI16: [(u8, u8, u8); 16] = [
+        (0, 0, 0),
+        (205, 0, 0),
+        (0, 205, 0),
+        (205, 205, 0),
+        (0, 0, 238),
+        (205, 0, 205),
+        (0, 205, 205),
+        (229, 229, 229),
+        (127, 127, 127),
+        (255, 0, 0),
+        (0, 255, 0),
+        (255, 255, 0),
+        (92, 92, 255),
+        (255, 0, 255),
+        (0, 255, 255),
+        (255, 255, 255),
+    ];
+
+    if index < 16 {
+        return ANSI16[index as usize];
+    }
+    if (16..=231).contains(&index) {
+        let value = index - 16;
+        let r = value / 36;
+        let g = (value % 36) / 6;
+        let b = value % 6;
+        let to_component = |v: u8| if v == 0 { 0 } else { 55 + v * 40 };
+        return (to_component(r), to_component(g), to_component(b));
+    }
+
+    let gray = 8 + (index.saturating_sub(232)) * 10;
+    (gray, gray, gray)
+}
+
+fn parse_theme_mode_hint(value: &str) -> Option<ThemeMode> {
+    let normalized = value.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "light" => Some(ThemeMode::Light),
+        "dark" => Some(ThemeMode::Dark),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::parse_color;
-    use ratatui::style::Color;
+    use super::{
+        AppConfig, ThemePreference, ansi_256_to_rgb, build_default_config_toml,
+        detect_from_colorfgbg_sample, parse_app_config, parse_hex_channel_scaled, parse_osc11_rgb,
+        parse_theme_mode_hint, parse_theme_preference, theme_mode_from_rgb,
+    };
+    use crate::ui::theme::ThemeMode;
+    use std::env;
 
     #[test]
-    fn parse_color_supports_hex() {
+    fn parse_theme_preference_accepts_expected_values() {
         assert_eq!(
-            parse_color("#112233").unwrap(),
-            Color::Rgb(0x11, 0x22, 0x33)
+            parse_theme_preference("auto").unwrap(),
+            ThemePreference::Auto
+        );
+        assert_eq!(
+            parse_theme_preference("dark").unwrap(),
+            ThemePreference::Dark
+        );
+        assert_eq!(
+            parse_theme_preference("light").unwrap(),
+            ThemePreference::Light
         );
     }
 
     #[test]
-    fn parse_color_supports_named_values() {
-        assert_eq!(parse_color("light_yellow").unwrap(), Color::LightYellow);
-        assert_eq!(parse_color("dark-gray").unwrap(), Color::DarkGray);
+    fn parse_theme_mode_hint_accepts_light_dark() {
+        assert_eq!(parse_theme_mode_hint("light"), Some(ThemeMode::Light));
+        assert_eq!(parse_theme_mode_hint("dark"), Some(ThemeMode::Dark));
+        assert_eq!(parse_theme_mode_hint("something-else"), None);
+    }
+
+    #[test]
+    fn colorfgbg_detection_maps_light_and_dark() {
+        unsafe {
+            env::set_var("COLORFGBG", "15;0");
+        }
+        let dark = detect_from_colorfgbg_sample().unwrap();
+        assert_eq!(dark.mode, ThemeMode::Dark);
+        assert_eq!(dark.background_rgb, Some(ansi_256_to_rgb(0)));
+
+        unsafe {
+            env::set_var("COLORFGBG", "0;15");
+        }
+        let light = detect_from_colorfgbg_sample().unwrap();
+        assert_eq!(light.mode, ThemeMode::Light);
+        assert_eq!(light.background_rgb, Some(ansi_256_to_rgb(15)));
+
+        unsafe {
+            env::remove_var("COLORFGBG");
+        }
+    }
+
+    #[test]
+    fn parse_osc11_rgb_handles_8bit_and_16bit_channels() {
+        assert_eq!(
+            parse_osc11_rgb("\u{1b}]11;rgb:ff/aa/00\u{7}"),
+            Some((65535, 43690, 0))
+        );
+        assert_eq!(
+            parse_osc11_rgb("\u{1b}]11;rgb:ffff/8080/0000\u{1b}\\"),
+            Some((65535, 32896, 0))
+        );
+    }
+
+    #[test]
+    fn parse_hex_channel_scaled_supports_variable_precision() {
+        assert_eq!(parse_hex_channel_scaled("f"), Some(65535));
+        assert_eq!(parse_hex_channel_scaled("ff"), Some(65535));
+        assert_eq!(parse_hex_channel_scaled("7f"), Some(32639));
+        assert_eq!(parse_hex_channel_scaled("8000"), Some(32768));
+    }
+
+    #[test]
+    fn theme_mode_from_rgb_maps_luminance() {
+        assert_eq!(theme_mode_from_rgb(0, 0, 0), ThemeMode::Dark);
+        assert_eq!(theme_mode_from_rgb(65535, 65535, 65535), ThemeMode::Light);
+    }
+
+    #[test]
+    fn generated_default_toml_round_trips_app_defaults() {
+        let default = AppConfig::default();
+        let toml = build_default_config_toml().unwrap();
+        let loaded = parse_app_config(&toml).unwrap();
+
+        assert_eq!(
+            loaded.to_persisted_config(),
+            default.to_persisted_config(),
+            "default config TOML should stay in sync with AppConfig defaults"
+        );
+    }
+
+    #[test]
+    fn rejects_legacy_color_fields() {
+        let legacy = r#"
+[theme]
+mode = "light"
+border = "yellow"
+"#;
+
+        assert!(parse_app_config(legacy).is_err());
     }
 }

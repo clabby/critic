@@ -208,6 +208,7 @@ pub struct ReviewScreenState {
     pub selected_diff_file: usize,
     pub diff_scroll: u16,
     pub selected_hunk: usize,
+    pub diff_viewport_height: u16,
     pub diff_search_focused: bool,
     pub diff_search_query: String,
     pub diff_tree_rows_cache: Vec<DiffTreeRow>,
@@ -233,6 +234,7 @@ impl ReviewScreenState {
             selected_diff_file: 0,
             diff_scroll: 0,
             selected_hunk: 0,
+            diff_viewport_height: 0,
             diff_search_focused: false,
             diff_search_query: String::new(),
             diff_tree_rows_cache: Vec::new(),
@@ -561,6 +563,7 @@ impl ReviewScreenState {
         self.selected_diff_file = 0;
         self.diff_scroll = 0;
         self.selected_hunk = 0;
+        self.diff_viewport_height = 0;
         self.diff_collapsed_dirs.clear();
         self.diff_search_focused = false;
         self.diff_tree_rows_cache.clear();
@@ -573,21 +576,11 @@ impl ReviewScreenState {
         self.selected_diff_row = 0;
         self.diff_scroll = 0;
         self.selected_hunk = 0;
+        self.diff_viewport_height = 0;
         self.diff_collapsed_dirs.clear();
         self.diff_search_focused = false;
         self.recompute_diff_tree_rows_cache();
-
-        if let Some((index, file_index)) = self
-            .diff_tree_rows()
-            .iter()
-            .enumerate()
-            .find_map(|(index, row)| row.file_index.map(|file_index| (index, file_index)))
-        {
-            self.selected_diff_row = index;
-            self.selected_diff_file = file_index;
-        }
-
-        self.jump_to_first_available_hunk();
+        self.select_initial_diff_file_row();
     }
 
     pub fn set_diff_error(&mut self, error: String) {
@@ -597,6 +590,7 @@ impl ReviewScreenState {
         self.selected_diff_file = 0;
         self.diff_scroll = 0;
         self.selected_hunk = 0;
+        self.diff_viewport_height = 0;
         self.diff_collapsed_dirs.clear();
         self.diff_search_focused = false;
         self.diff_tree_rows_cache.clear();
@@ -821,6 +815,10 @@ impl ReviewScreenState {
         self.collapsed.contains(key)
     }
 
+    pub fn set_diff_viewport_height(&mut self, height: u16) {
+        self.diff_viewport_height = height.max(1);
+    }
+
     fn set_selected_diff_file(&mut self, file_index: usize) {
         if file_index == self.selected_diff_file {
             return;
@@ -877,27 +875,47 @@ impl ReviewScreenState {
         }
     }
 
-    fn jump_to_first_available_hunk(&mut self) {
-        let Some(diff) = self.diff.as_ref() else {
-            return;
-        };
-
-        let Some((file_index, hunk_start)) =
-            diff.files.iter().enumerate().find_map(|(index, file)| {
-                file.hunk_starts.first().copied().map(|hunk| (index, hunk))
-            })
+    fn select_initial_diff_file_row(&mut self) {
+        let Some((row_index, file_index)) = self
+            .diff_tree_rows()
+            .iter()
+            .enumerate()
+            .find_map(|(index, row)| row.file_index.map(|file_index| (index, file_index)))
         else {
             return;
         };
 
-        self.set_active_hunk(file_index, hunk_start, 0);
+        self.selected_diff_row = row_index;
+        self.selected_diff_file = file_index;
+        self.selected_hunk = 0;
+        self.diff_scroll = self
+            .diff
+            .as_ref()
+            .and_then(|diff| diff.files.get(file_index))
+            .and_then(|file| file.hunk_starts.first().copied())
+            .and_then(|value| u16::try_from(value).ok())
+            .unwrap_or(0);
     }
 
     fn set_active_hunk(&mut self, file_index: usize, hunk_start: usize, hunk_index: usize) {
         self.ensure_diff_file_expanded(file_index);
         self.selected_diff_file = file_index;
         self.selected_hunk = hunk_index;
-        self.diff_scroll = u16::try_from(hunk_start).unwrap_or(u16::MAX);
+        let viewport_height = usize::from(self.diff_viewport_height.max(1));
+        let centered_start = hunk_start.saturating_sub(viewport_height / 2);
+        let clamped_scroll = self
+            .diff
+            .as_ref()
+            .and_then(|diff| diff.files.get(file_index))
+            .map(|file| {
+                if file.rows.is_empty() {
+                    centered_start
+                } else {
+                    centered_start.min(file.rows.len().saturating_sub(viewport_height))
+                }
+            })
+            .unwrap_or(centered_start);
+        self.diff_scroll = u16::try_from(clamped_scroll).unwrap_or(u16::MAX);
 
         if let Some(row_index) = self
             .diff_tree_rows()
@@ -1251,7 +1269,7 @@ mod tests {
     use super::{ReviewScreenState, build_diff_tree_rows};
     use crate::domain::{
         PullRequestData, PullRequestDiffData, PullRequestDiffFile, PullRequestDiffFileStatus,
-        PullRequestSummary,
+        PullRequestDiffRow, PullRequestDiffRowKind, PullRequestSummary,
     };
     use std::collections::HashSet;
 
@@ -1261,6 +1279,18 @@ mod tests {
             status: PullRequestDiffFileStatus::Modified,
             rows: Vec::new(),
             hunk_starts: Vec::new(),
+        }
+    }
+
+    fn context_row() -> PullRequestDiffRow {
+        PullRequestDiffRow {
+            left_line_number: None,
+            right_line_number: None,
+            left_text: String::new(),
+            right_text: String::new(),
+            left_highlights: Vec::new(),
+            right_highlights: Vec::new(),
+            kind: PullRequestDiffRowKind::Context,
         }
     }
 
@@ -1326,7 +1356,7 @@ mod tests {
     }
 
     #[test]
-    fn set_diff_selects_first_available_hunk() {
+    fn set_diff_selects_first_tree_file() {
         let mut review = build_review_state();
         let mut first = diff_file("alpha.rs");
         let mut second = diff_file("beta.rs");
@@ -1337,8 +1367,25 @@ mod tests {
             files: vec![first, second],
         });
 
-        assert_eq!(review.selected_diff_file, 1);
-        assert_eq!(review.diff_scroll, 12);
+        assert_eq!(review.selected_diff_file, 0);
+        assert_eq!(review.diff_scroll, 0);
+        assert_eq!(review.selected_hunk, 0);
+    }
+
+    #[test]
+    fn set_diff_scrolls_to_first_hunk_in_first_tree_file() {
+        let mut review = build_review_state();
+        let mut first = diff_file("alpha.rs");
+        let mut second = diff_file("beta.rs");
+        first.hunk_starts = vec![8, 30];
+        second.hunk_starts = vec![3];
+
+        review.set_diff(PullRequestDiffData {
+            files: vec![first, second],
+        });
+
+        assert_eq!(review.selected_diff_file, 0);
+        assert_eq!(review.diff_scroll, 8);
         assert_eq!(review.selected_hunk, 0);
     }
 
@@ -1382,6 +1429,24 @@ mod tests {
         assert_eq!(review.selected_diff_file, 2);
         assert_eq!(review.diff_scroll, 8);
         assert_eq!(review.selected_hunk, 1);
+    }
+
+    #[test]
+    fn jump_next_hunk_centers_target_in_viewport() {
+        let mut review = build_review_state();
+        let mut first = diff_file("alpha.rs");
+        first.hunk_starts = vec![60];
+        first.rows = vec![context_row(); 200];
+
+        review.set_diff(PullRequestDiffData { files: vec![first] });
+        review.set_diff_viewport_height(20);
+        review.diff_scroll = 0;
+
+        review.jump_next_hunk();
+
+        assert_eq!(review.selected_diff_file, 0);
+        assert_eq!(review.selected_hunk, 0);
+        assert_eq!(review.diff_scroll, 50);
     }
 
     #[test]

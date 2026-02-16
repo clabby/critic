@@ -14,7 +14,7 @@ pub mod screens;
 pub mod theme;
 
 /// Draws the active screen.
-pub fn render(frame: &mut Frame<'_>, state: &AppState, markdown: &mut MarkdownRenderer) {
+pub fn render(frame: &mut Frame<'_>, state: &mut AppState, markdown: &mut MarkdownRenderer) {
     let hints = build_hints(state);
 
     let root = Layout::vertical([
@@ -60,7 +60,13 @@ pub fn render(frame: &mut Frame<'_>, state: &AppState, markdown: &mut MarkdownRe
 
     match state.route {
         Route::Search => screens::search::render(frame, root[1], state),
-        Route::Review => screens::review::render(frame, root[1], state, markdown),
+        Route::Review => {
+            if let Some(review) = state.review.as_mut() {
+                screens::review::render(frame, root[1], review, markdown);
+            } else {
+                screens::search::render(frame, root[1], state);
+            }
+        }
     }
 
     footer::render(frame, root[2], &hints);
@@ -93,7 +99,6 @@ fn build_hints(state: &AppState) -> String {
                     parts.push("[s] search files".to_owned());
                     parts.push("[n/N] hunk".to_owned());
                     parts.push("[o/z] collapse".to_owned());
-                    parts.push("[T] syntax theme".to_owned());
                     parts.push("[b] back".to_owned());
                     parts.push("[R] refresh".to_owned());
                     parts.push("[q] quit".to_owned());

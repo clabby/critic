@@ -25,18 +25,18 @@ struct Cli {
     #[arg(long)]
     pull: Option<u64>,
 
-    #[cfg(feature = "harness")]
     /// Render deterministic frames to stdout without entering interactive mode.
+    #[cfg(feature = "harness")]
     #[arg(long, default_value_t = false)]
     harness_dump: bool,
 
-    #[cfg(feature = "harness")]
     /// Harness frame width.
+    #[cfg(feature = "harness")]
     #[arg(long, default_value_t = 140)]
     harness_width: u16,
 
-    #[cfg(feature = "harness")]
     /// Harness frame height.
+    #[cfg(feature = "harness")]
     #[arg(long, default_value_t = 44)]
     harness_height: u16,
 }
@@ -73,7 +73,13 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let config = config::load_or_create()?;
-    theme::apply(config.theme);
+    let runtime_theme = config.resolve_runtime_theme();
+    let terminal_background = config::detect_terminal_background_rgb();
+    theme::apply(
+        runtime_theme.palette,
+        runtime_theme.mode,
+        terminal_background,
+    );
 
     #[cfg(feature = "harness")]
     if cli.harness_dump {
@@ -86,7 +92,9 @@ async fn main() -> anyhow::Result<()> {
         owner: cli.owner,
         repo: cli.repo,
         pull: cli.pull,
-        syntax_theme: config.syntax_theme,
+        initial_theme_mode: runtime_theme.mode,
+        initial_terminal_background: terminal_background,
+        theme_config: config,
     })
     .await
 }

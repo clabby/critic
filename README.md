@@ -66,28 +66,19 @@ cargo run -- config --edit
 
 On startup, `critic` loads `~/.critic/config.toml`. If the file does not exist, it is created automatically with defaults.
 
-Theme colors are configurable under `[theme]`:
+Theme selection is configurable under `[theme]`:
 
 ```toml
 [theme]
-border = "#c47832"
-title = "#ebaa5a"
-dim = "dark_gray"
-text = "#d2d2c8"
-selected_fg = "black"
-selected_bg = "#e2b45c"
+mode = "auto" # auto | dark | light
 ```
 
-Syntax highlighting theme is configurable under `[syntax]`:
+`critic` derives UI colors from terminal ANSI colors instead of custom per-field palette overrides.
+When `theme.mode = "auto"`, `critic` uses terminal background detection and falls back to dark mode if detection is unavailable.
 
-```toml
-[syntax]
-theme = "base16-ocean.dark"
-```
-
-Supported color formats:
-- `#RRGGBB`
-- named ANSI colors like `black`, `yellow`, `light_blue`, `dark_gray`
+Syntax highlighting is fixed to Ocean themes and follows the active mode:
+- dark mode: `base16-ocean.dark`
+- light mode: `base16-ocean.light`
 
 ## Visual Harness
 
@@ -128,7 +119,6 @@ This is useful for fast visual checks in CI or local iteration without opening t
 - `PageDown`/`PageUp`: scroll right preview pane
 - `n` / `N` (or `]` / `[`): next/previous diff hunk (Diff tab)
 - `o` / `z`: collapse/expand selected directory (Diff tab)
-- `T`: cycle syntax theme (Diff tab)
 - `R`: refresh comments for current pull request (Threads tab) or refresh diff (Diff tab)
 - `b`: back to search
 - `q`: quit

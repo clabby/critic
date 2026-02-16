@@ -10,10 +10,12 @@ use crate::app::events::{
     spawn_load_pull_request_diff, spawn_load_pull_requests, spawn_load_specific_pull_request,
 };
 use crate::app::state::{AppState, ReviewSubmissionEvent, ReviewTab};
+use crate::config;
 use crate::domain::{CommentRef, PullRequestSummary, Route};
 use crate::github::client::create_client;
 use crate::render::markdown::MarkdownRenderer;
 use crate::ui;
+use crate::ui::theme::{self, ThemeMode};
 use anyhow::Context;
 use browser::open_in_browser;
 use crossterm::event::{
@@ -27,7 +29,7 @@ use crossterm::terminal::{
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use std::io::{Stdout, stdout};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 type WorkerTx = UnboundedSender<WorkerMessage>;
@@ -38,7 +40,9 @@ pub struct AppConfig {
     pub owner: Option<String>,
     pub repo: Option<String>,
     pub pull: Option<u64>,
-    pub syntax_theme: String,
+    pub initial_theme_mode: ThemeMode,
+    pub initial_terminal_background: Option<(u8, u8, u8)>,
+    pub theme_config: config::AppConfig,
 }
 
 struct DataContext {
@@ -78,24 +82,19 @@ pub async fn run(config: AppConfig) -> anyhow::Result<()> {
 
     let context = DataContext {
         client,
-        owner: config.owner,
-        repo: config.repo,
+        owner: config.owner.clone(),
+        repo: config.repo.clone(),
     };
 
     let mut terminal = setup_terminal()?;
     let mut markdown = MarkdownRenderer::new();
-    let configured_theme = config.syntax_theme.trim();
-    if !configured_theme.is_empty() && !markdown.set_syntax_theme(configured_theme) {
-        state.error_message = Some(format!(
-            "unknown syntax theme `{configured_theme}`; using `{}`",
-            markdown.current_syntax_theme_name()
-        ));
-    }
+    let _ = markdown.set_ocean_theme(config.initial_theme_mode);
 
     let result = run_event_loop(
         &mut terminal,
         &mut state,
         &context,
+        &config,
         &tx,
         &mut rx,
         &mut markdown,
@@ -110,16 +109,33 @@ async fn run_event_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     state: &mut AppState,
     context: &DataContext,
+    config: &AppConfig,
     tx: &WorkerTx,
     rx: &mut UnboundedReceiver<WorkerMessage>,
     markdown: &mut MarkdownRenderer,
 ) -> anyhow::Result<()> {
+    let mut active_theme_mode = config.initial_theme_mode;
+    let mut active_terminal_background = config.initial_terminal_background;
+    let mut last_theme_poll = Instant::now();
+    let mut last_user_input = Instant::now();
+
     loop {
         state.advance_spinner();
 
         while let Ok(message) = rx.try_recv() {
             process_worker_message(state, message, markdown, context, tx);
             maybe_spawn_search_load(state, context, tx);
+        }
+
+        if last_theme_poll.elapsed() >= Duration::from_secs(1) {
+            last_theme_poll = Instant::now();
+            maybe_refresh_theme(
+                config,
+                markdown,
+                &mut active_theme_mode,
+                &mut active_terminal_background,
+                last_user_input.elapsed(),
+            );
         }
 
         terminal.draw(|frame| ui::render(frame, state, markdown))?;
@@ -132,10 +148,12 @@ async fn run_event_loop(
             match event::read()? {
                 Event::Key(key_event) => {
                     if key_event.kind == KeyEventKind::Press {
-                        handle_key_event(terminal, state, context, tx, key_event, markdown);
+                        last_user_input = Instant::now();
+                        handle_key_event(terminal, state, context, tx, key_event);
                     }
                 }
                 Event::Mouse(mouse_event) => {
+                    last_user_input = Instant::now();
                     handle_mouse_event(state, mouse_event);
                 }
                 _ => {}
@@ -274,17 +292,55 @@ fn process_worker_message(
     }
 }
 
+fn maybe_refresh_theme(
+    config: &AppConfig,
+    markdown: &mut MarkdownRenderer,
+    active_mode: &mut ThemeMode,
+    active_terminal_background: &mut Option<(u8, u8, u8)>,
+    input_idle_for: Duration,
+) {
+    if config.theme_config.theme_preference != config::ThemePreference::Auto {
+        return;
+    }
+
+    if input_idle_for < Duration::from_millis(250) {
+        return;
+    }
+
+    let detected = config::detect_terminal_theme_sample_live(Duration::from_millis(120))
+        .or_else(config::detect_terminal_theme_sample_passive);
+    let Some(detected) = detected else {
+        return;
+    };
+    if detected.mode == *active_mode && detected.background_rgb == *active_terminal_background {
+        return;
+    }
+
+    let runtime_theme = config
+        .theme_config
+        .resolve_runtime_theme_for_mode(detected.mode);
+    theme::apply(
+        runtime_theme.palette,
+        runtime_theme.mode,
+        detected.background_rgb,
+    );
+    if detected.mode != *active_mode {
+        let _ = markdown.set_ocean_theme(runtime_theme.mode);
+    }
+    *active_mode = detected.mode;
+    *active_terminal_background = detected.background_rgb;
+}
+
 fn handle_key_event(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     state: &mut AppState,
     context: &DataContext,
     tx: &WorkerTx,
     key: KeyEvent,
-    markdown: &mut MarkdownRenderer,
 ) {
     match state.route {
         Route::Search => handle_search_key_event(state, context, tx, key),
-        Route::Review => handle_review_key_event(terminal, state, context, tx, key, markdown),
+        Route::Review => handle_review_key_event(terminal, state, context, tx, key),
     }
 }
 
@@ -411,7 +467,6 @@ fn handle_review_key_event(
     context: &DataContext,
     tx: &WorkerTx,
     key: KeyEvent,
-    markdown: &mut MarkdownRenderer,
 ) {
     let active_tab = state
         .review
@@ -463,11 +518,6 @@ fn handle_review_key_event(
         KeyCode::Char('W') => {
             if active_tab == ReviewTab::Threads {
                 open_selected_comment_in_browser(state);
-            }
-        }
-        KeyCode::Char('T') => {
-            if active_tab == ReviewTab::Diff {
-                markdown.cycle_syntax_theme();
             }
         }
         KeyCode::Down | KeyCode::Char('j') => {
