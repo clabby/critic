@@ -22,15 +22,13 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 
 fn render_search_box(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let focused = state.is_search_focused();
+    let title_style = if focused {
+        theme::info()
+    } else {
+        theme::title()
+    };
     let block = Block::default()
-        .title(Span::styled(
-            if focused {
-                " PR Search [focused] "
-            } else {
-                " PR Search [s to focus] "
-            },
-            theme::title(),
-        ))
+        .title(Span::styled(" PR Search ", title_style))
         .borders(Borders::ALL)
         .border_style(if focused {
             theme::open_thread()

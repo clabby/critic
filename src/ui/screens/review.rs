@@ -299,27 +299,43 @@ fn render_diff_files(frame: &mut Frame<'_>, area: Rect, review: &ReviewScreenSta
     let search_area = sections[0];
     let body_area = sections[1];
 
+    let focused = review.is_diff_search_focused();
+    let title_style = if focused {
+        theme::info()
+    } else {
+        theme::title()
+    };
+    let search_block = Block::default()
+        .title(Span::styled(" File Search ", title_style))
+        .borders(Borders::ALL)
+        .border_style(if focused {
+            theme::open_thread()
+        } else {
+            theme::border()
+        });
     let search_line = if review.diff_search_query().is_empty() {
         Line::from(vec![
-            Span::styled(" Filter: ", theme::dim()),
-            Span::styled("(press [s] to search files)", theme::dim()),
+            Span::raw("  query: "),
+            Span::styled(
+                if focused {
+                    "(type to filter changed files)"
+                } else {
+                    "(press [s] to search files)"
+                },
+                theme::dim(),
+            ),
         ])
     } else {
-        Line::from(vec![
-            Span::styled(" Filter: ", theme::dim()),
+        let mut line = vec![
+            Span::raw("  query: "),
             Span::styled(review.diff_search_query().to_owned(), theme::text()),
-        ])
+        ];
+        if focused {
+            line.push(Span::styled(" |", theme::open_thread()));
+        }
+        Line::from(line)
     };
-    let search_style = if review.is_diff_search_focused() {
-        theme::selected()
-    } else {
-        Style::default()
-    };
-    let search_widget = Paragraph::new(search_line).style(search_style).block(
-        Block::default()
-            .borders(Borders::BOTTOM)
-            .border_style(theme::border()),
-    );
+    let search_widget = Paragraph::new(search_line).block(search_block);
     frame.render_widget(search_widget, search_area);
 
     let (list_area, scrollbar_area) = if body_area.width > 1 {
