@@ -2,8 +2,6 @@
 
 `critic` is a terminal-first GitHub pull request review client.
 
-It is built for people who want to stay in a TUI while doing real code review work: scanning open PRs, reading and replying to threads, reviewing diffs with syntax highlighting, and submitting full reviews (comment/approve/request-changes) with inline comments.
-
 <p align="center">
   <img src="assets/diff.png" alt="critic" />
 </p>
