@@ -35,6 +35,33 @@ Optional explicit repository:
 cargo run -- --owner <owner> --repo <repo>
 ```
 
+Config utilities:
+
+```bash
+cargo run -- config --path
+cargo run -- config --edit
+```
+
+## Configuration
+
+On startup, `review-tui` loads `~/.review-tui/config.toml`. If the file does not exist, it is created automatically with defaults.
+
+Theme colors are configurable under `[theme]`:
+
+```toml
+[theme]
+border = "#c47832"
+title = "#ebaa5a"
+dim = "dark_gray"
+text = "#d2d2c8"
+selected_fg = "black"
+selected_bg = "#e2b45c"
+```
+
+Supported color formats:
+- `#RRGGBB`
+- named ANSI colors like `black`, `yellow`, `light_blue`, `dark_gray`
+
 ## Visual Harness
 
 Render deterministic search/review frames to stdout (feature-gated):
@@ -88,6 +115,7 @@ cargo test
 ## Module Layout
 
 - `src/github/client.rs`: authenticated Octocrab client (`gh auth token`)
+- `src/config.rs`: config loader + default `~/.review-tui/config.toml` bootstrap
 - `src/github/pulls.rs`: repository resolution + open PR fetching
 - `src/github/comments.rs`: issue/review comments fetch + thread organization + resolution state
 - `src/search/fuzzy.rs`: fuzzy ranking via `fuzzy-matcher`

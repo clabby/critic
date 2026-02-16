@@ -1,6 +1,7 @@
 //! review-tui library crate.
 
 pub mod app;
+pub mod config;
 pub mod domain;
 pub mod github;
 #[cfg(feature = "harness")]

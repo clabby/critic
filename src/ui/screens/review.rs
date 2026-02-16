@@ -10,7 +10,6 @@ use crate::ui::components::shared::short_preview;
 use crate::ui::theme;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
@@ -196,7 +195,7 @@ fn render_right_pane(
                 } else {
                     vec![Line::from(vec![Span::styled(
                         "Thread not found for selected row.",
-                        Style::default().fg(ratatui::style::Color::Red),
+                        theme::error(),
                     )])]
                 }
             }
@@ -288,7 +287,7 @@ fn fill_fenced_code_backgrounds(lines: &mut [Line<'static>], width: u16) {
         let padding = width - line_width;
         line.spans.push(Span::styled(
             " ".repeat(padding),
-            Style::default().bg(background).fg(Color::Black),
+            theme::code_padding().bg(background),
         ));
     }
 }
@@ -299,14 +298,11 @@ fn is_fenced_code_line(line: &Line<'_>) -> bool {
         return false;
     }
 
-    let mut leading_space_spans = 0usize;
-    for span in &line.spans {
-        if span.style.fg == Some(Color::DarkGray) && span.content.chars().all(|ch| ch == ' ') {
-            leading_space_spans += 1;
-        } else {
-            break;
-        }
-    }
+    let leading_space_spans = line
+        .spans
+        .iter()
+        .take_while(|span| span.content.chars().all(|ch| ch == ' '))
+        .count();
 
     leading_space_spans >= 2
 }

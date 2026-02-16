@@ -12,7 +12,7 @@ use ratatui::backend::CrosstermBackend;
 use std::env;
 use std::fs;
 use std::io::{Stdout, stdout};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -56,7 +56,12 @@ pub fn edit_with_system_editor(
     output
 }
 
-fn run_editor(path: &PathBuf) -> Result<()> {
+/// Opens a file path in the user's preferred editor.
+pub fn edit_file_with_system_editor(path: &Path) -> Result<()> {
+    run_editor(path)
+}
+
+fn run_editor(path: &Path) -> Result<()> {
     let mut candidates = Vec::new();
 
     if let Some(visual) = env::var_os("VISUAL") {

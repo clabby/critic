@@ -1,12 +1,18 @@
-use clap::Parser;
+use clap::{ArgGroup, Args, Parser, Subcommand};
+use review_tui::app::editor;
 use review_tui::app::{self, AppConfig};
+use review_tui::config;
 #[cfg(feature = "harness")]
 use review_tui::harness;
+use review_tui::ui::theme;
 
 /// Terminal UI for GitHub pull-request review thread browsing.
 #[derive(Debug, Parser)]
 #[command(version, about)]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// Repository owner. If omitted with `--repo`, both are resolved via `gh repo view`.
     #[arg(long, requires = "repo")]
     owner: Option<String>,
@@ -31,9 +37,39 @@ struct Cli {
     harness_height: u16,
 }
 
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Inspect or edit review-tui configuration.
+    Config(ConfigCommand),
+}
+
+#[derive(Debug, Args)]
+#[command(group(
+    ArgGroup::new("config_action")
+        .required(true)
+        .multiple(false)
+        .args(["edit", "path"])
+))]
+struct ConfigCommand {
+    /// Open the config file in $VISUAL/$EDITOR/nvim/vim/vi.
+    #[arg(long)]
+    edit: bool,
+
+    /// Print the config file path.
+    #[arg(long)]
+    path: bool,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+
+    if let Some(Command::Config(command)) = cli.command {
+        return handle_config_command(command);
+    }
+
+    let config = config::load_or_create()?;
+    theme::apply(config.theme);
 
     #[cfg(feature = "harness")]
     if cli.harness_dump {
@@ -47,4 +83,20 @@ async fn main() -> anyhow::Result<()> {
         repo: cli.repo,
     })
     .await
+}
+
+fn handle_config_command(command: ConfigCommand) -> anyhow::Result<()> {
+    let path = config::ensure_config_file()?;
+
+    if command.path {
+        println!("{}", path.display());
+        return Ok(());
+    }
+
+    if command.edit {
+        editor::edit_file_with_system_editor(path.as_path())?;
+        return Ok(());
+    }
+
+    Ok(())
 }

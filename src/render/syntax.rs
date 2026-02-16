@@ -1,6 +1,6 @@
 //! Fenced code highlighting via `tui-syntax-highlight` + `syntect`.
 
-use ratatui::style::{Color, Style};
+use crate::ui::theme;
 use ratatui::text::{Line, Span};
 use syntect::highlighting::{Theme, ThemeSet};
 use syntect::parsing::{SyntaxReference, SyntaxSet};
@@ -87,11 +87,6 @@ fn normalize_lang(lang: &str) -> String {
 fn plain_code_lines(source: &str) -> Vec<Line<'static>> {
     source
         .lines()
-        .map(|line| {
-            Line::from(vec![Span::styled(
-                line.to_owned(),
-                Style::default().fg(Color::Rgb(210, 210, 200)),
-            )])
-        })
+        .map(|line| Line::from(vec![Span::styled(line.to_owned(), theme::text())]))
         .collect()
 }

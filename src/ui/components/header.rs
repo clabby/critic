@@ -3,7 +3,6 @@
 use crate::ui::theme;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Gauge, Paragraph};
 
@@ -85,14 +84,7 @@ fn progress_gauge(progress: ReviewProgress) -> Gauge<'static> {
 
     Gauge::default()
         .ratio(ratio.clamp(0.0, 1.0))
-        .label(Span::styled(
-            format!("{percent}%"),
-            Style::default().fg(Color::Black),
-        ))
-        .gauge_style(
-            Style::default()
-                .fg(Color::Rgb(245, 205, 82))
-                .bg(Color::Rgb(94, 80, 30)),
-        )
-        .style(Style::default().fg(Color::Black).bg(Color::Rgb(94, 80, 30)))
+        .label(Span::styled(format!("{percent}%"), theme::gauge_label()))
+        .gauge_style(theme::gauge_fill())
+        .style(theme::gauge_empty())
 }

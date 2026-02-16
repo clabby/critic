@@ -5,7 +5,7 @@ use crate::domain::{
     ReviewThread, review_comment_is_outdated,
 };
 use crate::render::markdown::MarkdownRenderer;
-use ratatui::style::{Color, Modifier, Style};
+use crate::ui::theme;
 use ratatui::text::{Line, Span};
 
 /// Renders the preview panel for a selected review thread node.
@@ -28,18 +28,13 @@ pub fn render_thread_preview(
         "open"
     };
     let status_style = if root_thread.is_resolved {
-        Style::default().fg(Color::Green)
+        theme::resolved_thread()
     } else {
-        Style::default().fg(Color::Yellow)
+        theme::open_thread()
     };
 
     out.push(Line::from(vec![
-        Span::styled(
-            "Thread",
-            Style::default()
-                .fg(Color::LightYellow)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Span::styled("Thread", theme::section_title()),
         Span::raw(" "),
         Span::styled(format!("[{status}]"), status_style),
     ]));
@@ -49,23 +44,21 @@ pub fn render_thread_preview(
     out.push(horizontal_rule());
     out.push(Line::from(vec![Span::styled(
         "Pending Reply",
-        Style::default()
-            .fg(Color::LightYellow)
-            .add_modifier(Modifier::BOLD),
+        theme::section_title(),
     )]));
 
     let reply = reply_draft.unwrap_or("").trim();
     if reply.is_empty() {
         out.push(Line::from(vec![Span::styled(
             "  (empty)  [e] edit  [s] send  [x] clear",
-            Style::default().fg(Color::DarkGray),
+            theme::dim(),
         )]));
     } else {
         let rendered = markdown.render(reply);
         out.extend(prefix_lines(rendered, "  "));
         out.push(Line::from(vec![Span::styled(
             "  [e] edit  [s] send  [x] clear",
-            Style::default().fg(Color::DarkGray),
+            theme::dim(),
         )]));
     }
 
@@ -81,9 +74,7 @@ pub fn render_issue_preview(
 
     out.push(Line::from(vec![Span::styled(
         "Issue Comment",
-        Style::default()
-            .fg(Color::LightYellow)
-            .add_modifier(Modifier::BOLD),
+        theme::section_title(),
     )]));
     out.push(Line::from(vec![Span::styled(
         format!(
@@ -91,7 +82,7 @@ pub fn render_issue_preview(
             issue.user.login,
             short_date(issue.created_at.to_rfc3339().as_str())
         ),
-        Style::default().fg(Color::DarkGray),
+        theme::dim(),
     )]));
     out.push(Line::default());
 
@@ -120,12 +111,12 @@ fn render_thread_comment(
                     .map(|user| user.login.as_str())
                     .unwrap_or("unknown")
             ),
-            Style::default().fg(Color::LightBlue),
+            theme::author(),
         ),
         Span::raw("  "),
         Span::styled(
             short_date(thread.comment.created_at.to_rfc3339().as_str()),
-            Style::default().fg(Color::DarkGray),
+            theme::dim(),
         ),
     ]));
 
@@ -165,19 +156,11 @@ fn first_patch_comment(thread: &ReviewThread) -> Option<&ReviewComment> {
 fn append_patch_excerpt(out: &mut Vec<Line<'static>>, comment: &ReviewComment) {
     let outdated = review_comment_is_outdated(comment);
     out.push(Line::from(vec![
-        Span::styled(
-            "Patch",
-            Style::default()
-                .fg(Color::LightYellow)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Span::styled("Patch", theme::section_title()),
         Span::raw("  "),
-        Span::styled(
-            comment_location(comment),
-            Style::default().fg(Color::DarkGray),
-        ),
+        Span::styled(comment_location(comment), theme::dim()),
         if outdated {
-            Span::styled("  [outdated]", Style::default().fg(Color::Yellow))
+            Span::styled("  [outdated]", theme::outdated())
         } else {
             Span::raw("")
         },
@@ -186,20 +169,20 @@ fn append_patch_excerpt(out: &mut Vec<Line<'static>>, comment: &ReviewComment) {
     if comment.diff_hunk.trim().is_empty() {
         out.push(Line::from(vec![Span::styled(
             "  [no patch hunk available]",
-            Style::default().fg(Color::DarkGray),
+            theme::dim(),
         )]));
         return;
     }
 
     for line in comment.diff_hunk.lines().take(28) {
         let style = if line.starts_with("@@") {
-            Style::default().fg(Color::Cyan)
+            theme::diff_header()
         } else if line.starts_with('+') {
-            Style::default().fg(Color::Green)
+            theme::diff_add()
         } else if line.starts_with('-') {
-            Style::default().fg(Color::Red)
+            theme::diff_remove()
         } else {
-            Style::default().fg(Color::Rgb(190, 190, 180))
+            theme::diff_context()
         };
 
         out.push(Line::from(vec![Span::styled(format!("  {line}"), style)]));
@@ -228,9 +211,7 @@ pub fn render_review_summary_preview(
 
     out.push(Line::from(vec![Span::styled(
         "Review Summary",
-        Style::default()
-            .fg(Color::LightYellow)
-            .add_modifier(Modifier::BOLD),
+        theme::section_title(),
     )]));
     out.push(Line::from(vec![Span::styled(
         format!(
@@ -245,7 +226,7 @@ pub fn render_review_summary_preview(
                 .map(|value| short_date(value.to_rfc3339().as_str()))
                 .unwrap_or_else(|| "unknown".to_owned())
         ),
-        Style::default().fg(Color::DarkGray),
+        theme::dim(),
     )]));
     out.push(Line::default());
 
@@ -260,10 +241,7 @@ fn prefix_lines(lines: Vec<Line<'static>>, prefix: &str) -> Vec<Line<'static>> {
         .into_iter()
         .map(|line| {
             let mut spans = Vec::with_capacity(line.spans.len() + 1);
-            spans.push(Span::styled(
-                prefix.to_owned(),
-                Style::default().fg(Color::DarkGray),
-            ));
+            spans.push(Span::styled(prefix.to_owned(), theme::dim()));
             spans.extend(line.spans);
             Line::from(spans)
         })
@@ -280,7 +258,7 @@ fn short_date(value: &str) -> String {
 fn horizontal_rule() -> Line<'static> {
     Line::from(vec![Span::styled(
         "────────────────────────────────────────────────────────────────────────────",
-        Style::default().fg(Color::DarkGray),
+        theme::dim(),
     )])
 }
 

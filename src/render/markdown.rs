@@ -1,8 +1,9 @@
 //! Markdown rendering for the right pane preview.
 
 use crate::render::syntax::SyntaxHighlighter;
+use crate::ui::theme;
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 #[derive(Debug, Clone)]
@@ -35,7 +36,7 @@ impl MarkdownRenderer {
         let parser = Parser::new_ext(text, Options::all());
 
         let mut lines: Vec<Vec<Span<'static>>> = vec![Vec::new()];
-        let mut style_stack: Vec<Style> = vec![Style::default().fg(Color::Rgb(210, 210, 200))];
+        let mut style_stack: Vec<Style> = vec![theme::text()];
         let mut list_stack: Vec<ListState> = Vec::new();
         let mut in_code_block: Option<CodeBlockState> = None;
 
@@ -47,8 +48,7 @@ impl MarkdownRenderer {
                     Event::End(TagEnd::CodeBlock) => {
                         let highlighted = self.syntax.highlight(&code.language, &code.content);
                         for mut line in highlighted {
-                            let mut prefixed =
-                                vec![Span::styled("  ", Style::default().fg(Color::DarkGray))];
+                            let mut prefixed = vec![Span::styled("  ", theme::dim())];
                             prefixed.extend(line.spans.drain(..));
                             lines.push(prefixed);
                         }
@@ -100,10 +100,7 @@ impl MarkdownRenderer {
                             }
                             _ => format!("{indent}- "),
                         };
-                        push_span(
-                            &mut lines,
-                            Span::styled(marker, Style::default().fg(Color::DarkGray)),
-                        );
+                        push_span(&mut lines, Span::styled(marker, theme::dim()));
                     }
                     Tag::CodeBlock(kind) => {
                         push_nonempty_newline(&mut lines);
@@ -118,7 +115,10 @@ impl MarkdownRenderer {
                     }
                     Tag::Link { .. } => {
                         let base = *style_stack.last().unwrap_or(&Style::default());
-                        style_stack.push(base.add_modifier(Modifier::UNDERLINED).fg(Color::Cyan));
+                        style_stack.push(
+                            base.add_modifier(Modifier::UNDERLINED)
+                                .fg(theme::link_color()),
+                        );
                     }
                     _ => {}
                 },
@@ -150,11 +150,10 @@ impl MarkdownRenderer {
                     push_span(&mut lines, Span::styled(content.to_string(), style));
                 }
                 Event::Code(content) => {
-                    let style = Style::default()
-                        .fg(Color::Yellow)
-                        .bg(Color::Rgb(40, 40, 40))
-                        .add_modifier(Modifier::BOLD);
-                    push_span(&mut lines, Span::styled(format!("`{content}`"), style));
+                    push_span(
+                        &mut lines,
+                        Span::styled(format!("`{content}`"), theme::inline_code()),
+                    );
                 }
                 Event::SoftBreak | Event::HardBreak => {
                     push_nonempty_newline(&mut lines);
@@ -163,10 +162,7 @@ impl MarkdownRenderer {
                     push_nonempty_newline(&mut lines);
                     push_span(
                         &mut lines,
-                        Span::styled(
-                            "────────────────────────────────────────",
-                            Style::default().fg(Color::DarkGray),
-                        ),
+                        Span::styled("────────────────────────────────────────", theme::dim()),
                     );
                     push_nonempty_newline(&mut lines);
                 }
