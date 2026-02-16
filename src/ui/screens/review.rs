@@ -2,8 +2,8 @@
 
 use crate::app::state::{AppState, ReviewScreenState, ReviewTab};
 use crate::domain::{
-    CommentRef, ListNodeKind, PullRequestDiffFileStatus, PullRequestDiffHighlightRange,
-    PullRequestDiffRowKind,
+    CommentRef, ListNodeKind, PullRequestDiffFile, PullRequestDiffFileStatus,
+    PullRequestDiffHighlightRange, PullRequestDiffRowKind,
 };
 use crate::render::markdown::MarkdownRenderer;
 use crate::render::thread::{
@@ -275,21 +275,21 @@ fn render_right_pane(
 
     frame.render_widget(paragraph, text_area);
 
-    if content_height > viewport_height {
-        if let Some(area) = scrollbar_area {
-            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                .begin_symbol(None)
-                .end_symbol(None)
-                .track_style(theme::dim())
-                .thumb_style(theme::title());
+    if content_height > viewport_height
+        && let Some(area) = scrollbar_area
+    {
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None)
+            .track_style(theme::dim())
+            .thumb_style(theme::title());
 
-            let scroll_positions = max_scroll.saturating_add(1);
-            let mut scrollbar_state = ScrollbarState::new(scroll_positions)
-                .viewport_content_length(viewport_height)
-                .position(scroll);
+        let scroll_positions = max_scroll.saturating_add(1);
+        let mut scrollbar_state = ScrollbarState::new(scroll_positions)
+            .viewport_content_length(viewport_height)
+            .position(scroll);
 
-            frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
-        }
+        frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
     }
 }
 
@@ -377,7 +377,7 @@ fn render_diff_files(frame: &mut Frame<'_>, area: Rect, review: &ReviewScreenSta
                         .unwrap_or_else(|| Span::styled("[?] ", theme::dim()));
 
                     ListItem::new(Line::from(vec![
-                        Span::styled(format!("{indent}"), theme::dim()),
+                        Span::styled(indent.to_string(), theme::dim()),
                         status,
                         Span::raw(row.label.clone()),
                     ]))
@@ -410,20 +410,21 @@ fn render_diff_files(frame: &mut Frame<'_>, area: Rect, review: &ReviewScreenSta
         .highlight_symbol("▸ ");
     frame.render_stateful_widget(list, list_area, &mut list_state);
 
-    if list_area.height > 0 && row_count > usize::from(list_area.height) {
-        if let Some(scrollbar_area) = scrollbar_area {
-            let max_scroll = row_count.saturating_sub(usize::from(list_area.height));
-            let scroll = list_state.offset().min(max_scroll);
-            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                .begin_symbol(None)
-                .end_symbol(None)
-                .track_style(theme::dim())
-                .thumb_style(theme::title());
-            let mut scrollbar_state = ScrollbarState::new(max_scroll.saturating_add(1))
-                .viewport_content_length(usize::from(list_area.height))
-                .position(scroll);
-            frame.render_stateful_widget(scrollbar, scrollbar_area, &mut scrollbar_state);
-        }
+    if list_area.height > 0
+        && row_count > usize::from(list_area.height)
+        && let Some(scrollbar_area) = scrollbar_area
+    {
+        let max_scroll = row_count.saturating_sub(usize::from(list_area.height));
+        let scroll = list_state.offset().min(max_scroll);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None)
+            .track_style(theme::dim())
+            .thumb_style(theme::title());
+        let mut scrollbar_state = ScrollbarState::new(max_scroll.saturating_add(1))
+            .viewport_content_length(usize::from(list_area.height))
+            .position(scroll);
+        frame.render_stateful_widget(scrollbar, scrollbar_area, &mut scrollbar_state);
     }
 }
 
@@ -482,24 +483,24 @@ fn render_diff_content(
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, text_area);
 
-    if content_height > viewport_height {
-        if let Some(area) = scrollbar_area {
-            let max_scroll = content_height.saturating_sub(viewport_height);
-            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                .begin_symbol(None)
-                .end_symbol(None)
-                .track_style(theme::dim())
-                .thumb_style(theme::title());
-            let mut scrollbar_state = ScrollbarState::new(max_scroll.saturating_add(1))
-                .viewport_content_length(viewport_height)
-                .position(scroll);
-            frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
-        }
+    if content_height > viewport_height
+        && let Some(area) = scrollbar_area
+    {
+        let max_scroll = content_height.saturating_sub(viewport_height);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None)
+            .track_style(theme::dim())
+            .thumb_style(theme::title());
+        let mut scrollbar_state = ScrollbarState::new(max_scroll.saturating_add(1))
+            .viewport_content_length(viewport_height)
+            .position(scroll);
+        frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
     }
 }
 
 fn render_diff_rows(
-    file: &crate::domain::PullRequestDiffFile,
+    file: &PullRequestDiffFile,
     width: u16,
     left_syntax: &[Vec<Option<Color>>],
     right_syntax: &[Vec<Option<Color>>],

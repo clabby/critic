@@ -47,29 +47,29 @@ pub fn demo_pull_request_data_for(pull: &PullRequestSummary) -> PullRequestData 
     let grouped_root = ReviewThread {
         thread_id: Some("PRRT_kwDOX-1234M4A9".to_owned()),
         is_resolved: false,
-        comment: review_comment_fixture(
-            1001,
-            None,
-            Some(8101),
-            "mock_reviewer_01",
-            "Test thread #1",
-            "@@ -10,8 +10,11 @@\n pub type MessageId = u64;\n+/// Wraps transport metadata with decoded payload.\n pub struct MessageEnvelope {\n     pub id: MessageId,\n     pub body: Vec<u8>,\n }\n",
-            "src/app/editor.rs",
-            Some(14),
-        ),
+        comment: review_comment_fixture(ReviewCommentFixture {
+            id: 1001,
+            in_reply_to_id: None,
+            pull_request_review_id: Some(8101),
+            author: "mock_reviewer_01",
+            body: "Test thread #1",
+            diff_hunk: "@@ -10,8 +10,11 @@\n pub type MessageId = u64;\n+/// Wraps transport metadata with decoded payload.\n pub struct MessageEnvelope {\n     pub id: MessageId,\n     pub body: Vec<u8>,\n }\n",
+            path: "src/app/editor.rs",
+            line: Some(14),
+        }),
         replies: vec![ReviewThread {
             thread_id: Some("PRRT_kwDOX-1234M4A9".to_owned()),
             is_resolved: false,
-            comment: review_comment_fixture(
-                1002,
-                Some(1001),
-                Some(8101),
-                "mock_author_01",
-                "Following up on the editor changes.",
-                "",
-                "src/app/editor.rs",
-                Some(14),
-            ),
+            comment: review_comment_fixture(ReviewCommentFixture {
+                id: 1002,
+                in_reply_to_id: Some(1001),
+                pull_request_review_id: Some(8101),
+                author: "mock_author_01",
+                body: "Following up on the editor changes.",
+                diff_hunk: "",
+                path: "src/app/editor.rs",
+                line: Some(14),
+            }),
             replies: vec![],
         }],
     };
@@ -77,32 +77,32 @@ pub fn demo_pull_request_data_for(pull: &PullRequestSummary) -> PullRequestData 
     let grouped_resolved = ReviewThread {
         thread_id: Some("PRRT_kwDOX-1234M4B2".to_owned()),
         is_resolved: true,
-        comment: review_comment_fixture(
-            1003,
-            None,
-            Some(8101),
-            "mock_reviewer_02",
-            "Resolved thread under the same review summary.",
-            "",
-            "src/app/editor.rs",
-            Some(22),
-        ),
+        comment: review_comment_fixture(ReviewCommentFixture {
+            id: 1003,
+            in_reply_to_id: None,
+            pull_request_review_id: Some(8101),
+            author: "mock_reviewer_02",
+            body: "Resolved thread under the same review summary.",
+            diff_hunk: "",
+            path: "src/app/editor.rs",
+            line: Some(22),
+        }),
         replies: vec![],
     };
 
     let standalone = ReviewThread {
         thread_id: Some("PRRT_kwDOX-1234M4C7".to_owned()),
         is_resolved: false,
-        comment: review_comment_fixture(
-            1004,
-            None,
-            None,
-            "mock_reviewer_04",
-            "Standalone review thread not linked to a review summary.",
-            "@@ -31,2 +33,3 @@\n+ println!(\"debug\");\n",
-            "src/codec/mod.rs",
-            Some(33),
-        ),
+        comment: review_comment_fixture(ReviewCommentFixture {
+            id: 1004,
+            in_reply_to_id: None,
+            pull_request_review_id: None,
+            author: "mock_reviewer_04",
+            body: "Standalone review thread not linked to a review summary.",
+            diff_hunk: "@@ -31,2 +33,3 @@\n+ println!(\"debug\");\n",
+            path: "src/codec/mod.rs",
+            line: Some(33),
+        }),
         replies: vec![],
     };
 
@@ -146,16 +146,29 @@ pub fn demo_pull_request_data_for(pull: &PullRequestSummary) -> PullRequestData 
     }
 }
 
-fn review_comment_fixture(
+struct ReviewCommentFixture<'a> {
     id: u64,
     in_reply_to_id: Option<u64>,
     pull_request_review_id: Option<u64>,
-    author: &str,
-    body: &str,
-    diff_hunk: &str,
-    path: &str,
+    author: &'a str,
+    body: &'a str,
+    diff_hunk: &'a str,
+    path: &'a str,
     line: Option<u64>,
-) -> ReviewComment {
+}
+
+fn review_comment_fixture(input: ReviewCommentFixture<'_>) -> ReviewComment {
+    let ReviewCommentFixture {
+        id,
+        in_reply_to_id,
+        pull_request_review_id,
+        author,
+        body,
+        diff_hunk,
+        path,
+        line,
+    } = input;
+
     let mut payload = json!({
         "url": format!("https://example.invalid/comments/{id}"),
         "id": id,

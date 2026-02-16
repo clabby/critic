@@ -81,12 +81,12 @@ fn wrap_hint_tokens(hints: &str, width: usize) -> Vec<Vec<HintToken>> {
 
 fn parse_hint_token(token: &str) -> HintToken {
     let token = token.trim();
-    if token.starts_with('[') {
-        if let Some(end) = token.find(']') {
-            let key = token[..=end].to_owned();
-            let desc = token[end + 1..].trim().to_owned();
-            return HintToken { key, desc };
-        }
+    if token.starts_with('[')
+        && let Some(end) = token.find(']')
+    {
+        let key = token[..=end].to_owned();
+        let desc = token[end + 1..].trim().to_owned();
+        return HintToken { key, desc };
     }
 
     HintToken {

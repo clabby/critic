@@ -130,20 +130,20 @@ fn render_results(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let viewport_height = usize::from(list_area.height);
     let content_height = state.search_results.len();
 
-    if content_height > viewport_height {
-        if let Some(scrollbar_area) = scrollbar_area {
-            let max_scroll = content_height.saturating_sub(viewport_height);
-            let scroll = list_state.offset().min(max_scroll);
-            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                .begin_symbol(None)
-                .end_symbol(None)
-                .track_style(theme::dim())
-                .thumb_style(theme::title());
-            let scroll_positions = max_scroll.saturating_add(1);
-            let mut scrollbar_state = ScrollbarState::new(scroll_positions)
-                .viewport_content_length(viewport_height)
-                .position(scroll);
-            frame.render_stateful_widget(scrollbar, scrollbar_area, &mut scrollbar_state);
-        }
+    if content_height > viewport_height
+        && let Some(scrollbar_area) = scrollbar_area
+    {
+        let max_scroll = content_height.saturating_sub(viewport_height);
+        let scroll = list_state.offset().min(max_scroll);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None)
+            .track_style(theme::dim())
+            .thumb_style(theme::title());
+        let scroll_positions = max_scroll.saturating_add(1);
+        let mut scrollbar_state = ScrollbarState::new(scroll_positions)
+            .viewport_content_length(viewport_height)
+            .position(scroll);
+        frame.render_stateful_widget(scrollbar, scrollbar_area, &mut scrollbar_state);
     }
 }

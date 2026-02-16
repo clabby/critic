@@ -221,15 +221,15 @@ mutation UnresolveReviewThread($threadId: ID!) {
         }))
         .await?;
 
-    if let Some(errors) = response.get("errors").and_then(|value| value.as_array()) {
-        if !errors.is_empty() {
-            let message = errors
-                .iter()
-                .filter_map(|value| value.get("message").and_then(|message| message.as_str()))
-                .collect::<Vec<_>>()
-                .join("; ");
-            return Err(PullRequestCommentsError::GraphQlResponseError(message));
-        }
+    if let Some(errors) = response.get("errors").and_then(|value| value.as_array())
+        && !errors.is_empty()
+    {
+        let message = errors
+            .iter()
+            .filter_map(|value| value.get("message").and_then(|message| message.as_str()))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(PullRequestCommentsError::GraphQlResponseError(message));
     }
 
     Ok(())
@@ -273,13 +273,13 @@ pub async fn submit_pull_request_review(
         _ => None,
     };
 
-    if let Some(expected) = expected_state {
-        if review.state != Some(expected) {
-            return Err(PullRequestCommentsError::UnexpectedReviewState {
-                event: event.to_owned(),
-                state: format!("{:?}", review.state),
-            });
-        }
+    if let Some(expected) = expected_state
+        && review.state != Some(expected)
+    {
+        return Err(PullRequestCommentsError::UnexpectedReviewState {
+            event: event.to_owned(),
+            state: format!("{:?}", review.state),
+        });
     }
 
     Ok(())
@@ -471,15 +471,15 @@ async fn review_thread_resolution_map(
             }))
             .await?;
 
-        if let Some(errors) = response.errors {
-            if !errors.is_empty() {
-                let message = errors
-                    .into_iter()
-                    .map(|error| error.message)
-                    .collect::<Vec<_>>()
-                    .join("; ");
-                return Err(PullRequestCommentsError::GraphQlResponseError(message));
-            }
+        if let Some(errors) = response.errors
+            && !errors.is_empty()
+        {
+            let message = errors
+                .into_iter()
+                .map(|error| error.message)
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(PullRequestCommentsError::GraphQlResponseError(message));
         }
 
         let Some(review_threads) = response

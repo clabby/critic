@@ -4,9 +4,11 @@ use crate::domain::PullRequestDiffFile;
 use crate::render::syntax::SyntaxHighlighter;
 use crate::ui::theme;
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use std::collections::HashMap;
+
+type SyntaxColorLine = Vec<Option<Color>>;
 
 #[derive(Debug, Clone)]
 struct ListState {
@@ -60,10 +62,7 @@ impl MarkdownRenderer {
     pub fn diff_file_highlights(
         &mut self,
         file: &PullRequestDiffFile,
-    ) -> (
-        &[Vec<Option<ratatui::style::Color>>],
-        &[Vec<Option<ratatui::style::Color>>],
-    ) {
+    ) -> (&[SyntaxColorLine], &[SyntaxColorLine]) {
         let key = DiffCacheKey {
             theme: self.current_syntax_theme_name().to_owned(),
             path: file.path.clone(),
@@ -104,7 +103,7 @@ impl MarkdownRenderer {
                         let highlighted = self.syntax.highlight(&code.language, &code.content);
                         for mut line in highlighted {
                             let mut prefixed = vec![Span::styled("  ", theme::dim())];
-                            prefixed.extend(line.spans.drain(..));
+                            prefixed.append(&mut line.spans);
                             lines.push(prefixed);
                         }
                         lines.push(Vec::new());
@@ -241,8 +240,8 @@ struct DiffCacheKey {
 
 #[derive(Debug, Clone, Default)]
 struct DiffFileHighlights {
-    left: Vec<Vec<Option<ratatui::style::Color>>>,
-    right: Vec<Vec<Option<ratatui::style::Color>>>,
+    left: Vec<SyntaxColorLine>,
+    right: Vec<SyntaxColorLine>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]

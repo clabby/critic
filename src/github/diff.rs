@@ -587,14 +587,14 @@ fn hunk_row_starts(
     let mut starts = Vec::new();
 
     for chunk in chunks {
-        let mut left_lines = Vec::new();
-        let mut right_lines = Vec::new();
+        let mut left_lines = HashSet::new();
+        let mut right_lines = HashSet::new();
         for line in chunk {
             if let Some(lhs) = &line.lhs {
-                left_lines.push(lhs.line_number);
+                left_lines.insert(lhs.line_number);
             }
             if let Some(rhs) = &line.rhs {
-                right_lines.push(rhs.line_number);
+                right_lines.insert(rhs.line_number);
             }
         }
 
@@ -604,10 +604,11 @@ fn hunk_row_starts(
             (left_hit || right_hit).then_some(index)
         });
 
-        if let Some(index) = row_index {
-            if starts.last().copied() != Some(index) && index < rows.len() {
-                starts.push(index);
-            }
+        if let Some(index) = row_index
+            && starts.last().copied() != Some(index)
+            && index < rows.len()
+        {
+            starts.push(index);
         }
     }
 

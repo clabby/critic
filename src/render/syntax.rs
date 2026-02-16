@@ -171,10 +171,10 @@ fn resolve_syntax<'a>(syntax_set: &'a SyntaxSet, lang: &str) -> &'a SyntaxRefere
 }
 
 fn resolve_syntax_for_path<'a>(syntax_set: &'a SyntaxSet, path: &str) -> &'a SyntaxReference {
-    if let Some(ext) = path.rsplit('.').next().filter(|value| *value != path) {
-        if let Some(syntax) = syntax_set.find_syntax_by_extension(ext) {
-            return syntax;
-        }
+    if let Some(ext) = path.rsplit('.').next().filter(|value| *value != path)
+        && let Some(syntax) = syntax_set.find_syntax_by_extension(ext)
+    {
+        return syntax;
     }
 
     syntax_set

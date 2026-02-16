@@ -10,8 +10,7 @@ use crate::app::events::{
     spawn_load_pull_request_diff, spawn_load_pull_requests, spawn_load_specific_pull_request,
 };
 use crate::app::state::{AppState, ReviewSubmissionEvent, ReviewTab};
-use crate::domain::CommentRef;
-use crate::domain::Route;
+use crate::domain::{CommentRef, PullRequestSummary, Route};
 use crate::github::client::create_client;
 use crate::render::markdown::MarkdownRenderer;
 use crate::ui;
@@ -29,7 +28,9 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use std::io::{Stdout, stdout};
 use std::time::Duration;
-use tokio::sync::mpsc::{self, UnboundedReceiver};
+use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+
+type WorkerTx = UnboundedSender<WorkerMessage>;
 
 /// Runtime configuration provided by CLI flags.
 #[derive(Debug, Clone)]
@@ -109,7 +110,7 @@ async fn run_event_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     state: &mut AppState,
     context: &DataContext,
-    tx: &tokio::sync::mpsc::UnboundedSender<WorkerMessage>,
+    tx: &WorkerTx,
     rx: &mut UnboundedReceiver<WorkerMessage>,
     markdown: &mut MarkdownRenderer,
 ) -> anyhow::Result<()> {
@@ -150,7 +151,7 @@ fn process_worker_message(
     message: WorkerMessage,
     markdown: &mut MarkdownRenderer,
     context: &DataContext,
-    tx: &tokio::sync::mpsc::UnboundedSender<WorkerMessage>,
+    tx: &WorkerTx,
 ) {
     match message {
         WorkerMessage::PullRequestsLoaded {
@@ -180,16 +181,15 @@ fn process_worker_message(
                     state.error_message = None;
                     markdown.clear_diff_cache();
 
-                    if let Some(review) = state.review.as_mut() {
-                        if review.pull.number == pull.number
-                            && review.pull.owner == pull.owner
-                            && review.pull.repo == pull.repo
-                        {
-                            review.clear_diff();
-                            review.set_data(data);
-                            state.route = Route::Review;
-                            return;
-                        }
+                    if let Some(review) = state.review.as_mut()
+                        && review.pull.number == pull.number
+                        && review.pull.owner == pull.owner
+                        && review.pull.repo == pull.repo
+                    {
+                        review.clear_diff();
+                        review.set_data(data);
+                        state.route = Route::Review;
+                        return;
                     }
 
                     state.open_review(pull, data);
@@ -254,17 +254,16 @@ fn process_worker_message(
                 Ok(data) => {
                     state.error_message = None;
                     markdown.clear_diff_cache();
-                    if let Some(review) = state.review.as_mut() {
-                        if review.pull.number == pull.number
-                            && review.pull.owner == pull.owner
-                            && review.pull.repo == pull.repo
-                        {
-                            if let Some(root_key) = clear_reply_root_key {
-                                review.clear_reply_draft(&root_key);
-                            }
-                            review.set_data(data);
-                            state.route = Route::Review;
+                    if let Some(review) = state.review.as_mut()
+                        && review.pull.number == pull.number
+                        && review.pull.owner == pull.owner
+                        && review.pull.repo == pull.repo
+                    {
+                        if let Some(root_key) = clear_reply_root_key {
+                            review.clear_reply_draft(&root_key);
                         }
+                        review.set_data(data);
+                        state.route = Route::Review;
                     }
                 }
                 Err(error) => {
@@ -279,7 +278,7 @@ fn handle_key_event(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     state: &mut AppState,
     context: &DataContext,
-    tx: &tokio::sync::mpsc::UnboundedSender<WorkerMessage>,
+    tx: &WorkerTx,
     key: KeyEvent,
     markdown: &mut MarkdownRenderer,
 ) {
@@ -347,7 +346,7 @@ fn mouse_scroll_delta(kind: MouseEventKind) -> Option<MouseScrollDelta> {
 fn handle_search_key_event(
     state: &mut AppState,
     context: &DataContext,
-    tx: &tokio::sync::mpsc::UnboundedSender<WorkerMessage>,
+    tx: &WorkerTx,
     key: KeyEvent,
 ) {
     if state.is_search_focused() {
@@ -410,7 +409,7 @@ fn handle_review_key_event(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     state: &mut AppState,
     context: &DataContext,
-    tx: &tokio::sync::mpsc::UnboundedSender<WorkerMessage>,
+    tx: &WorkerTx,
     key: KeyEvent,
     markdown: &mut MarkdownRenderer,
 ) {
@@ -505,24 +504,24 @@ fn handle_review_key_event(
             }
         }
         KeyCode::Char('n') | KeyCode::Char(']') => {
-            if active_tab == ReviewTab::Diff {
-                if let Some(review) = state.review.as_mut() {
-                    review.jump_next_hunk();
-                }
+            if active_tab == ReviewTab::Diff
+                && let Some(review) = state.review.as_mut()
+            {
+                review.jump_next_hunk();
             }
         }
         KeyCode::Char('N') | KeyCode::Char('[') => {
-            if active_tab == ReviewTab::Diff {
-                if let Some(review) = state.review.as_mut() {
-                    review.jump_prev_hunk();
-                }
+            if active_tab == ReviewTab::Diff
+                && let Some(review) = state.review.as_mut()
+            {
+                review.jump_prev_hunk();
             }
         }
         KeyCode::Char('f') => {
-            if active_tab == ReviewTab::Threads {
-                if let Some(review) = state.review.as_mut() {
-                    review.toggle_resolved_filter();
-                }
+            if active_tab == ReviewTab::Threads
+                && let Some(review) = state.review.as_mut()
+            {
+                review.toggle_resolved_filter();
             }
         }
         KeyCode::Char('R') => {
@@ -593,12 +592,11 @@ fn handle_review_key_event(
             }
         }
         KeyCode::Char('x') => {
-            if active_tab == ReviewTab::Threads {
-                if let Some(review) = state.review.as_mut() {
-                    if let Some(context) = review.selected_thread_context() {
-                        review.clear_reply_draft(&context.root_key);
-                    }
-                }
+            if active_tab == ReviewTab::Threads
+                && let Some(review) = state.review.as_mut()
+                && let Some(context) = review.selected_thread_context()
+            {
+                review.clear_reply_draft(&context.root_key);
             }
         }
         KeyCode::Char('s') => match active_tab {
@@ -646,11 +644,7 @@ fn handle_review_key_event(
     }
 }
 
-fn maybe_spawn_search_load(
-    state: &mut AppState,
-    context: &DataContext,
-    tx: &tokio::sync::mpsc::UnboundedSender<WorkerMessage>,
-) {
+fn maybe_spawn_search_load(state: &mut AppState, context: &DataContext, tx: &WorkerTx) {
     if state.is_busy() || !state.pull_requests.is_empty() {
         return;
     }
@@ -666,10 +660,7 @@ fn maybe_spawn_search_load(
     }
 }
 
-fn load_active_diff_if_needed(
-    state: &mut AppState,
-    tx: &tokio::sync::mpsc::UnboundedSender<WorkerMessage>,
-) {
+fn load_active_diff_if_needed(state: &mut AppState, tx: &WorkerTx) {
     if state.is_busy() {
         return;
     }
@@ -722,11 +713,7 @@ fn open_reply_editor(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &
     }
 }
 
-fn send_selected_reply(
-    state: &mut AppState,
-    context: &DataContext,
-    tx: &tokio::sync::mpsc::UnboundedSender<WorkerMessage>,
-) {
+fn send_selected_reply(state: &mut AppState, context: &DataContext, tx: &WorkerTx) {
     if state.is_busy() {
         return;
     }
@@ -770,7 +757,7 @@ fn open_submit_review_editor_and_submit(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     state: &mut AppState,
     context: &DataContext,
-    tx: &tokio::sync::mpsc::UnboundedSender<WorkerMessage>,
+    tx: &WorkerTx,
     event: ReviewSubmissionEvent,
 ) {
     if state.is_busy() {
@@ -813,8 +800,8 @@ fn open_submit_review_editor_and_submit(
 fn execute_mutation(
     state: &mut AppState,
     context: &DataContext,
-    tx: &tokio::sync::mpsc::UnboundedSender<WorkerMessage>,
-    pull: crate::domain::PullRequestSummary,
+    tx: &WorkerTx,
+    pull: PullRequestSummary,
     mutation: MutationRequest,
     clear_reply_root_key: Option<String>,
     operation_label: impl Into<String>,
