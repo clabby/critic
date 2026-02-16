@@ -43,7 +43,7 @@ pub fn render(
 
     match review.active_tab() {
         ReviewTab::Threads => render_threads_tab(frame, rows[1], review, markdown),
-        ReviewTab::Diff => render_diff_tab(frame, rows[1], review),
+        ReviewTab::Diff => render_diff_tab(frame, rows[1], review, markdown),
     }
 }
 
@@ -80,12 +80,17 @@ fn render_threads_tab(
     render_right_pane(frame, panes[1], review, markdown);
 }
 
-fn render_diff_tab(frame: &mut Frame<'_>, area: Rect, review: &ReviewScreenState) {
+fn render_diff_tab(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    review: &ReviewScreenState,
+    markdown: &mut MarkdownRenderer,
+) {
     let panes =
         Layout::horizontal([Constraint::Percentage(25), Constraint::Percentage(75)]).split(area);
 
     render_diff_files(frame, panes[0], review);
-    render_diff_content(frame, panes[1], review);
+    render_diff_content(frame, panes[1], review, markdown);
 }
 
 fn render_left_pane(frame: &mut Frame<'_>, area: Rect, review: &ReviewScreenState) {
@@ -289,39 +294,93 @@ fn render_right_pane(
 }
 
 fn render_diff_files(frame: &mut Frame<'_>, area: Rect, review: &ReviewScreenState) {
-    let count = review.diff_file_count();
+    let file_count = review.diff_file_count();
+    let rows = review.diff_tree_rows();
+    let row_count = rows.len();
     let block = Block::default()
-        .title(Span::styled(format!(" Files ({count}) ",), theme::title()))
+        .title(Span::styled(
+            format!(" Files ({file_count}) ",),
+            theme::title(),
+        ))
         .borders(Borders::ALL)
         .border_style(theme::border());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let (list_area, scrollbar_area) = if inner.width > 1 {
-        let columns = Layout::horizontal([Constraint::Min(1), Constraint::Length(1)]).split(inner);
+    let sections = Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).split(inner);
+    let search_area = sections[0];
+    let body_area = sections[1];
+
+    let search_line = if review.diff_search_query().is_empty() {
+        Line::from(vec![
+            Span::styled(" Filter: ", theme::dim()),
+            Span::styled("(press [s] to search files)", theme::dim()),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled(" Filter: ", theme::dim()),
+            Span::styled(review.diff_search_query().to_owned(), theme::text()),
+        ])
+    };
+    let search_style = if review.is_diff_search_focused() {
+        theme::selected()
+    } else {
+        Style::default()
+    };
+    let search_widget = Paragraph::new(search_line).style(search_style).block(
+        Block::default()
+            .borders(Borders::BOTTOM)
+            .border_style(theme::border()),
+    );
+    frame.render_widget(search_widget, search_area);
+
+    let (list_area, scrollbar_area) = if body_area.width > 1 {
+        let columns =
+            Layout::horizontal([Constraint::Min(1), Constraint::Length(1)]).split(body_area);
         (columns[0], Some(columns[1]))
     } else {
-        (inner, None)
+        (body_area, None)
     };
 
     let items: Vec<ListItem<'static>> = if let Some(diff) = &review.diff {
-        if diff.files.is_empty() {
+        if rows.is_empty() {
             vec![ListItem::new(Line::from(vec![Span::styled(
                 "No changed files.",
                 theme::dim(),
             )]))]
         } else {
-            diff.files
-                .iter()
-                .map(|file| {
-                    let status = match file.status {
-                        PullRequestDiffFileStatus::Added => {
-                            Span::styled("[A] ", theme::resolved_thread())
-                        }
-                        PullRequestDiffFileStatus::Removed => Span::styled("[D] ", theme::error()),
-                        PullRequestDiffFileStatus::Modified => Span::styled("[M] ", theme::title()),
-                    };
-                    ListItem::new(Line::from(vec![status, Span::raw(file.path.clone())]))
+            rows.iter()
+                .map(|row| {
+                    let indent = "  ".repeat(row.depth);
+                    if row.is_directory {
+                        let icon = if row.is_collapsed { "▸ " } else { "▾ " };
+                        return ListItem::new(Line::from(vec![Span::styled(
+                            format!("{indent}{icon}{}/", row.label),
+                            theme::title(),
+                        )]));
+                    }
+
+                    let status = row
+                        .file_index
+                        .and_then(|index| diff.files.get(index))
+                        .map(|file| match file.status {
+                            PullRequestDiffFileStatus::Added => {
+                                Span::styled("[A] ", theme::resolved_thread())
+                            }
+                            PullRequestDiffFileStatus::Removed => {
+                                Span::styled("[D] ", theme::error())
+                            }
+                            PullRequestDiffFileStatus::Modified => {
+                                Span::styled("[M] ", theme::title())
+                            }
+                        })
+                        .unwrap_or_else(|| Span::styled("[?] ", theme::dim()));
+
+                    ListItem::new(Line::from(vec![
+                        Span::styled(format!("{indent}"), theme::dim()),
+                        status,
+                        Span::raw(row.label.clone()),
+                    ]))
                 })
                 .collect()
         }
@@ -338,8 +397,12 @@ fn render_diff_files(frame: &mut Frame<'_>, area: Rect, review: &ReviewScreenSta
     };
 
     let mut list_state = ListState::default();
-    if count > 0 {
-        list_state.select(Some(review.selected_diff_file.min(count.saturating_sub(1))));
+    if row_count > 0 {
+        list_state.select(Some(
+            review
+                .selected_diff_tree_row()
+                .min(row_count.saturating_sub(1)),
+        ));
     }
 
     let list = List::new(items)
@@ -347,9 +410,9 @@ fn render_diff_files(frame: &mut Frame<'_>, area: Rect, review: &ReviewScreenSta
         .highlight_symbol("▸ ");
     frame.render_stateful_widget(list, list_area, &mut list_state);
 
-    if count > usize::from(list_area.height) {
+    if list_area.height > 0 && row_count > usize::from(list_area.height) {
         if let Some(scrollbar_area) = scrollbar_area {
-            let max_scroll = count.saturating_sub(usize::from(list_area.height));
+            let max_scroll = row_count.saturating_sub(usize::from(list_area.height));
             let scroll = list_state.offset().min(max_scroll);
             let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(None)
@@ -364,10 +427,21 @@ fn render_diff_files(frame: &mut Frame<'_>, area: Rect, review: &ReviewScreenSta
     }
 }
 
-fn render_diff_content(frame: &mut Frame<'_>, area: Rect, review: &ReviewScreenState) {
+fn render_diff_content(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    review: &ReviewScreenState,
+    markdown: &mut MarkdownRenderer,
+) {
     let title = review
         .selected_diff_file()
-        .map(|file| format!(" Diff: {} ", file.path))
+        .map(|file| {
+            format!(
+                " Diff: {} [{}] ",
+                file.path,
+                markdown.current_syntax_theme_name()
+            )
+        })
         .unwrap_or_else(|| " Diff ".to_owned());
     let block = Block::default()
         .title(Span::styled(title, theme::title()))
@@ -384,7 +458,8 @@ fn render_diff_content(frame: &mut Frame<'_>, area: Rect, review: &ReviewScreenS
     };
 
     let lines = if let Some(file) = review.selected_diff_file() {
-        render_diff_rows(file, text_area.width)
+        let (left, right) = markdown.diff_file_highlights(file);
+        render_diff_rows(file, text_area.width, left, right)
     } else if let Some(error) = &review.diff_error {
         vec![Line::from(vec![Span::styled(
             format!("Diff unavailable: {error}"),
@@ -420,7 +495,12 @@ fn render_diff_content(frame: &mut Frame<'_>, area: Rect, review: &ReviewScreenS
     }
 }
 
-fn render_diff_rows(file: &crate::domain::PullRequestDiffFile, width: u16) -> Vec<Line<'static>> {
+fn render_diff_rows(
+    file: &crate::domain::PullRequestDiffFile,
+    width: u16,
+    left_syntax: &[Vec<Option<Color>>],
+    right_syntax: &[Vec<Option<Color>>],
+) -> Vec<Line<'static>> {
     let width = usize::from(width.max(1));
     let separator = " │ ";
     let available = width.saturating_sub(separator.len());
@@ -435,6 +515,8 @@ fn render_diff_rows(file: &crate::domain::PullRequestDiffFile, width: u16) -> Ve
                 row.left_line_number,
                 &row.left_text,
                 left_width,
+                row.left_line_number
+                    .and_then(|line| left_syntax.get(line.saturating_sub(1)).map(Vec::as_slice)),
                 &row.left_highlights,
                 row.kind,
                 true,
@@ -444,6 +526,8 @@ fn render_diff_rows(file: &crate::domain::PullRequestDiffFile, width: u16) -> Ve
                 row.right_line_number,
                 &row.right_text,
                 right_width,
+                row.right_line_number
+                    .and_then(|line| right_syntax.get(line.saturating_sub(1)).map(Vec::as_slice)),
                 &row.right_highlights,
                 row.kind,
                 false,
@@ -457,6 +541,7 @@ fn render_diff_side(
     line_number: Option<usize>,
     text: &str,
     width: usize,
+    syntax_fg: Option<&[Option<Color>]>,
     highlights: &[PullRequestDiffHighlightRange],
     kind: PullRequestDiffRowKind,
     is_left: bool,
@@ -473,6 +558,14 @@ fn render_diff_side(
 
     let visible_chars = text.chars().take(text_width).collect::<Vec<_>>();
     let visible_len = visible_chars.len();
+    let syntax_fg = syntax_fg.map(|line| {
+        line.iter()
+            .copied()
+            .take(visible_len)
+            .chain(std::iter::repeat(None))
+            .take(visible_len)
+            .collect::<Vec<_>>()
+    });
     let base_fg = theme::text().fg.unwrap_or(Color::White);
     let (content_fg, content_bg, highlight_fg, highlight_bg) = match kind {
         PullRequestDiffRowKind::Context => (base_fg, None, base_fg, None),
@@ -550,43 +643,34 @@ fn render_diff_side(
     }
 
     if text.trim().is_empty() {
-        let filler_style = if kind == PullRequestDiffRowKind::Context {
-            content_style
-        } else {
+        let alignment_gap = line_number.is_none() && kind != PullRequestDiffRowKind::Context;
+        let filler_style = if alignment_gap {
             Style::default()
                 .fg(Color::Rgb(57, 72, 114))
                 .bg(content_bg.unwrap_or(Color::Reset))
-        };
-        let filler = if kind == PullRequestDiffRowKind::Context {
-            " ".repeat(text_width)
+        } else if kind == PullRequestDiffRowKind::Modified {
+            highlight_style
         } else {
+            content_style
+        };
+        let filler = if alignment_gap {
             hatched_filler(text_width)
+        } else {
+            " ".repeat(text_width)
         };
         spans.push(Span::styled(filler, filler_style));
         return spans;
     }
 
     if should_use_partial {
-        let mut cursor = 0usize;
-        for range in line_highlights {
-            if range.start > cursor {
-                spans.push(Span::styled(
-                    chars_to_string(&visible_chars, cursor, range.start),
-                    content_style,
-                ));
-            }
-            spans.push(Span::styled(
-                chars_to_string(&visible_chars, range.start, range.end),
-                highlight_style,
-            ));
-            cursor = range.end;
-        }
-        if cursor < visible_len {
-            spans.push(Span::styled(
-                chars_to_string(&visible_chars, cursor, visible_len),
-                content_style,
-            ));
-        }
+        let highlight_mask = mask_highlight_ranges(&line_highlights, visible_len);
+        spans.extend(render_syntax_cells(
+            &visible_chars,
+            syntax_fg.as_deref(),
+            content_style,
+            highlight_style,
+            Some(&highlight_mask),
+        ));
         if visible_len < text_width {
             spans.push(Span::styled(
                 " ".repeat(text_width - visible_len),
@@ -596,16 +680,24 @@ fn render_diff_side(
         return spans;
     }
 
-    let mut content: String = visible_chars.iter().collect();
-    if visible_len < text_width {
-        content.push_str(&" ".repeat(text_width - visible_len));
-    }
     let fill_style = if kind == PullRequestDiffRowKind::Modified {
         highlight_style
     } else {
         content_style
     };
-    spans.push(Span::styled(content, fill_style));
+    spans.extend(render_syntax_cells(
+        &visible_chars,
+        syntax_fg.as_deref(),
+        fill_style,
+        fill_style,
+        None,
+    ));
+    if visible_len < text_width {
+        spans.push(Span::styled(
+            " ".repeat(text_width - visible_len),
+            fill_style,
+        ));
+    }
     spans
 }
 
@@ -666,12 +758,69 @@ fn ranges_cover_visible_content(
     false
 }
 
-fn chars_to_string(chars: &[char], start: usize, end: usize) -> String {
-    chars
-        .iter()
-        .skip(start)
-        .take(end.saturating_sub(start))
-        .collect()
+fn mask_highlight_ranges(ranges: &[PullRequestDiffHighlightRange], width: usize) -> Vec<bool> {
+    let mut mask = vec![false; width];
+    for range in ranges {
+        let start = range.start.min(width);
+        let end = range.end.min(width);
+        for flag in mask.iter_mut().take(end).skip(start) {
+            *flag = true;
+        }
+    }
+    mask
+}
+
+fn render_syntax_cells(
+    chars: &[char],
+    syntax_fg: Option<&[Option<Color>]>,
+    base_style: Style,
+    highlight_style: Style,
+    highlight_mask: Option<&[bool]>,
+) -> Vec<Span<'static>> {
+    if chars.is_empty() {
+        return Vec::new();
+    }
+
+    let mut spans = Vec::new();
+    let mut buffer = String::new();
+    let mut current_style: Option<Style> = None;
+
+    for (index, ch) in chars.iter().enumerate() {
+        let highlighted = highlight_mask
+            .and_then(|mask| mask.get(index))
+            .copied()
+            .unwrap_or(false);
+
+        let mut style = if highlighted {
+            highlight_style
+        } else {
+            base_style
+        };
+        if let Some(color) = syntax_fg.and_then(|fg| fg.get(index)).copied().flatten() {
+            style = style.fg(color);
+        }
+
+        if current_style == Some(style) {
+            buffer.push(*ch);
+            continue;
+        }
+
+        if !buffer.is_empty() {
+            spans.push(Span::styled(
+                std::mem::take(&mut buffer),
+                current_style.unwrap_or(base_style),
+            ));
+        }
+
+        current_style = Some(style);
+        buffer.push(*ch);
+    }
+
+    if !buffer.is_empty() {
+        spans.push(Span::styled(buffer, current_style.unwrap_or(base_style)));
+    }
+
+    spans
 }
 
 fn hatched_filler(width: usize) -> String {

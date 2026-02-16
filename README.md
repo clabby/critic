@@ -12,7 +12,7 @@ Terminal UI for browsing GitHub pull request review threads.
   - Right: rendered thread preview (markdown + syntax-highlighted code blocks via `tui-syntax-highlight`).
 - Review screen tabs:
   - `Threads`: existing review thread workflow.
-  - `Diff`: 25% file tree + 75% aligned side-by-side PR diff powered by `difft`.
+  - `Diff`: 25% file tree + 75% aligned side-by-side PR diff powered by `difft`, with syntax highlighting.
 - Review mutations:
   - Reply to review threads.
   - Resolve/unresolve threads.
@@ -41,6 +41,20 @@ Optional explicit repository:
 cargo run -- --owner <owner> --repo <repo>
 ```
 
+Open a specific pull request directly (bypasses search on success):
+
+```bash
+cargo run -- --pull <number>
+```
+
+You can combine it with `--owner/--repo`:
+
+```bash
+cargo run -- --owner <owner> --repo <repo> --pull <number>
+```
+
+If the pull request does not exist, the app shows an inline error and falls back to the search screen.
+
 Config utilities:
 
 ```bash
@@ -62,6 +76,13 @@ dim = "dark_gray"
 text = "#d2d2c8"
 selected_fg = "black"
 selected_bg = "#e2b45c"
+```
+
+Syntax highlighting theme is configurable under `[syntax]`:
+
+```toml
+[syntax]
+theme = "base16-ocean.dark"
 ```
 
 Supported color formats:
@@ -106,7 +127,9 @@ This is useful for fast visual checks in CI or local iteration without opening t
 - `Esc`: back to search
 - `PageDown`/`PageUp`: scroll right preview pane
 - `n` / `N` (or `]` / `[`): next/previous diff hunk (Diff tab)
-- `R`: refresh comments for current pull request
+- `o` / `z`: collapse/expand selected directory (Diff tab)
+- `T`: cycle syntax theme (Diff tab)
+- `R`: refresh comments for current pull request (Threads tab) or refresh diff (Diff tab)
 - `b`: back to search
 - `q`: quit
 

@@ -21,6 +21,10 @@ struct Cli {
     #[arg(long, requires = "owner")]
     repo: Option<String>,
 
+    /// Pull request number to open directly on startup.
+    #[arg(long)]
+    pull: Option<u64>,
+
     #[cfg(feature = "harness")]
     /// Render deterministic frames to stdout without entering interactive mode.
     #[arg(long, default_value_t = false)]
@@ -81,6 +85,8 @@ async fn main() -> anyhow::Result<()> {
     app::run(AppConfig {
         owner: cli.owner,
         repo: cli.repo,
+        pull: cli.pull,
+        syntax_theme: config.syntax_theme,
     })
     .await
 }

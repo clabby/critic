@@ -1,10 +1,12 @@
 //! Markdown rendering for the right pane preview.
 
+use crate::domain::PullRequestDiffFile;
 use crate::render::syntax::SyntaxHighlighter;
 use crate::ui::theme;
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 struct ListState {
@@ -22,13 +24,66 @@ struct CodeBlockState {
 #[derive(Default)]
 pub struct MarkdownRenderer {
     syntax: SyntaxHighlighter,
+    diff_cache: HashMap<DiffCacheKey, DiffFileHighlights>,
 }
 
 impl MarkdownRenderer {
     pub fn new() -> Self {
         Self {
             syntax: SyntaxHighlighter::new(),
+            diff_cache: HashMap::new(),
         }
+    }
+
+    pub fn clear_diff_cache(&mut self) {
+        self.diff_cache.clear();
+    }
+
+    pub fn set_syntax_theme(&mut self, name: &str) -> bool {
+        let changed = self.syntax.set_theme(name);
+        if changed {
+            self.diff_cache.clear();
+        }
+        changed
+    }
+
+    pub fn cycle_syntax_theme(&mut self) -> &str {
+        let name = self.syntax.cycle_theme();
+        self.diff_cache.clear();
+        name
+    }
+
+    pub fn current_syntax_theme_name(&self) -> &str {
+        self.syntax.current_theme_name()
+    }
+
+    pub fn diff_file_highlights(
+        &mut self,
+        file: &PullRequestDiffFile,
+    ) -> (
+        &[Vec<Option<ratatui::style::Color>>],
+        &[Vec<Option<ratatui::style::Color>>],
+    ) {
+        let key = DiffCacheKey {
+            theme: self.current_syntax_theme_name().to_owned(),
+            path: file.path.clone(),
+        };
+
+        let entry = self.diff_cache.entry(key).or_insert_with(|| {
+            let left_source = build_diff_side_source(file, DiffSide::Left);
+            let right_source = build_diff_side_source(file, DiffSide::Right);
+
+            DiffFileHighlights {
+                left: self
+                    .syntax
+                    .highlight_foreground_for_path(&file.path, &left_source),
+                right: self
+                    .syntax
+                    .highlight_foreground_for_path(&file.path, &right_source),
+            }
+        });
+
+        (&entry.left, &entry.right)
     }
 
     /// Renders markdown into styled ratatui lines.
@@ -176,6 +231,59 @@ impl MarkdownRenderer {
 
         lines.into_iter().map(Line::from).collect()
     }
+}
+
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+struct DiffCacheKey {
+    theme: String,
+    path: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct DiffFileHighlights {
+    left: Vec<Vec<Option<ratatui::style::Color>>>,
+    right: Vec<Vec<Option<ratatui::style::Color>>>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum DiffSide {
+    Left,
+    Right,
+}
+
+fn build_diff_side_source(file: &PullRequestDiffFile, side: DiffSide) -> String {
+    let mut max_line = 0usize;
+    for row in &file.rows {
+        let line = match side {
+            DiffSide::Left => row.left_line_number,
+            DiffSide::Right => row.right_line_number,
+        };
+        max_line = max_line.max(line.unwrap_or(0));
+    }
+
+    if max_line == 0 {
+        return String::new();
+    }
+
+    let mut lines = vec![String::new(); max_line];
+    for row in &file.rows {
+        match side {
+            DiffSide::Left => {
+                if let Some(line) = row.left_line_number {
+                    lines[line.saturating_sub(1)] = row.left_text.clone();
+                }
+            }
+            DiffSide::Right => {
+                if let Some(line) = row.right_line_number {
+                    lines[line.saturating_sub(1)] = row.right_text.clone();
+                }
+            }
+        }
+    }
+
+    let mut source = lines.join("\n");
+    source.push('\n');
+    source
 }
 
 fn push_span(lines: &mut Vec<Vec<Span<'static>>>, span: Span<'static>) {

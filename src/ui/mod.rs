@@ -85,7 +85,15 @@ fn build_hints(state: &AppState) -> String {
 
             if let Some(review) = state.review.as_ref() {
                 if review.active_tab() == ReviewTab::Diff {
+                    if review.is_diff_search_focused() {
+                        return "[type] edit file filter  [backspace] delete  [enter/esc] unfocus"
+                            .to_owned();
+                    }
+
+                    parts.push("[s] search files".to_owned());
                     parts.push("[n/N] hunk".to_owned());
+                    parts.push("[o/z] collapse".to_owned());
+                    parts.push("[T] syntax theme".to_owned());
                     parts.push("[b] back".to_owned());
                     parts.push("[R] refresh".to_owned());
                     parts.push("[q] quit".to_owned());

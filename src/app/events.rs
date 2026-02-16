@@ -6,7 +6,9 @@ use crate::github::comments::{
     submit_pull_request_review,
 };
 use crate::github::diff::fetch_pull_request_diff_data;
-use crate::github::pulls::{fetch_open_pull_requests, resolve_repository};
+use crate::github::pulls::{
+    fetch_open_pull_requests, fetch_pull_request_summary, resolve_repository,
+};
 use tokio::sync::mpsc::UnboundedSender;
 
 /// Message sent from background workers to the UI event loop.
@@ -15,6 +17,11 @@ pub enum WorkerMessage {
     PullRequestsLoaded {
         repository_label: String,
         result: Result<Vec<PullRequestSummary>, String>,
+    },
+    PullRequestResolved {
+        repository_label: String,
+        pull_number: u64,
+        result: Result<PullRequestSummary, String>,
     },
     PullRequestDataLoaded {
         pull: PullRequestSummary,
@@ -86,6 +93,55 @@ pub fn spawn_load_pull_requests(
     });
 }
 
+/// Resolves and loads a specific pull request summary for direct-open startup.
+pub fn spawn_load_specific_pull_request(
+    tx: UnboundedSender<WorkerMessage>,
+    client: octocrab::Octocrab,
+    owner: Option<String>,
+    repo: Option<String>,
+    pull_number: u64,
+) {
+    tokio::spawn(async move {
+        let message = match resolve_repository(owner, repo).await {
+            Ok(repository) => {
+                let label = repository.label();
+                match fetch_pull_request_summary(&client, &repository, pull_number).await {
+                    Ok(pull) => WorkerMessage::PullRequestResolved {
+                        repository_label: label,
+                        pull_number,
+                        result: Ok(pull),
+                    },
+                    Err(error) => {
+                        let detail = match &error {
+                            crate::github::pulls::PullRequestQueryError::Octocrab(source)
+                                if is_not_found(source) =>
+                            {
+                                format!(
+                                    "pull request #{pull_number} was not found in {}",
+                                    repository.label()
+                                )
+                            }
+                            _ => error.to_string(),
+                        };
+                        WorkerMessage::PullRequestResolved {
+                            repository_label: label,
+                            pull_number,
+                            result: Err(detail),
+                        }
+                    }
+                }
+            }
+            Err(error) => WorkerMessage::PullRequestResolved {
+                repository_label: "(unknown repository)".to_owned(),
+                pull_number,
+                result: Err(error.to_string()),
+            },
+        };
+
+        let _ = tx.send(message);
+    });
+}
+
 /// Spawns async loading of comments for a selected pull request.
 pub fn spawn_load_pull_request_data(
     tx: UnboundedSender<WorkerMessage>,
@@ -113,6 +169,13 @@ pub fn spawn_load_pull_request_diff(
             .map_err(|error| error.to_string());
         let _ = tx.send(WorkerMessage::PullRequestDiffLoaded { pull, result });
     });
+}
+
+fn is_not_found(error: &octocrab::Error) -> bool {
+    matches!(
+        error,
+        octocrab::Error::GitHub { source, .. } if source.status_code.as_u16() == 404
+    )
 }
 
 /// Spawns a mutation followed by a pull request comment refresh.

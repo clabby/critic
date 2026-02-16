@@ -1,16 +1,19 @@
 //! Fenced code highlighting via `tui-syntax-highlight` + `syntect`.
 
 use crate::ui::theme;
+use ratatui::style::Color;
 use ratatui::text::{Line, Span};
-use syntect::highlighting::{Theme, ThemeSet};
+use syntect::highlighting::ThemeSet;
 use syntect::parsing::{SyntaxReference, SyntaxSet};
 use syntect::util::LinesWithEndings;
 use tui_syntax_highlight::Highlighter;
 
 /// Syntax highlighter for fenced markdown code blocks.
-#[derive(Clone)]
 pub struct SyntaxHighlighter {
     syntax_set: SyntaxSet,
+    theme_set: ThemeSet,
+    theme_names: Vec<String>,
+    active_theme_index: usize,
     highlighter: Highlighter,
 }
 
@@ -25,11 +28,17 @@ impl SyntaxHighlighter {
     pub fn new() -> Self {
         let syntax_set = SyntaxSet::load_defaults_newlines();
         let theme_set = ThemeSet::load_defaults();
-        let theme = select_theme(&theme_set);
-        let highlighter = Highlighter::new(theme).line_numbers(false);
+        let mut theme_names: Vec<String> = theme_set.themes.keys().cloned().collect();
+        theme_names.sort();
+
+        let active_theme_index = select_theme_index(&theme_names);
+        let highlighter = build_highlighter(&theme_set, &theme_names, active_theme_index);
 
         Self {
             syntax_set,
+            theme_set,
+            theme_names,
+            active_theme_index,
             highlighter,
         }
     }
@@ -37,7 +46,83 @@ impl SyntaxHighlighter {
     /// Highlights a fenced code block using a best-effort language lookup.
     pub fn highlight(&self, lang: &str, source: &str) -> Vec<Line<'static>> {
         let syntax = resolve_syntax(&self.syntax_set, lang);
+        self.highlight_with_syntax(source, syntax)
+    }
 
+    /// Highlights source using file extension/name lookup.
+    pub fn highlight_for_path(&self, path: &str, source: &str) -> Vec<Line<'static>> {
+        let syntax = resolve_syntax_for_path(&self.syntax_set, path);
+        self.highlight_with_syntax(source, syntax)
+    }
+
+    /// Highlights source and returns optional per-character foreground colors per line.
+    pub fn highlight_foreground_for_path(
+        &self,
+        path: &str,
+        source: &str,
+    ) -> Vec<Vec<Option<Color>>> {
+        let syntax = resolve_syntax_for_path(&self.syntax_set, path);
+        match self.highlighter.highlight_lines(
+            LinesWithEndings::from(source),
+            syntax,
+            &self.syntax_set,
+        ) {
+            Ok(text) => text
+                .lines
+                .into_iter()
+                .map(|line| {
+                    let mut colors = Vec::new();
+                    for span in line.spans {
+                        let fg = span.style.fg;
+                        let width = span.content.chars().count();
+                        colors.extend(std::iter::repeat_n(fg, width));
+                    }
+                    colors
+                })
+                .collect(),
+            Err(_) => source
+                .lines()
+                .map(|line| vec![None; line.chars().count()])
+                .collect(),
+        }
+    }
+
+    pub fn set_theme(&mut self, name: &str) -> bool {
+        let Some(index) = self
+            .theme_names
+            .iter()
+            .position(|candidate| candidate.eq_ignore_ascii_case(name))
+        else {
+            return false;
+        };
+
+        self.active_theme_index = index;
+        self.rebuild_highlighter();
+        true
+    }
+
+    pub fn cycle_theme(&mut self) -> &str {
+        if self.theme_names.is_empty() {
+            return "unknown";
+        }
+        self.active_theme_index = (self.active_theme_index + 1) % self.theme_names.len();
+        self.rebuild_highlighter();
+        self.current_theme_name()
+    }
+
+    pub fn current_theme_name(&self) -> &str {
+        self.theme_names
+            .get(self.active_theme_index)
+            .map(String::as_str)
+            .unwrap_or("unknown")
+    }
+
+    fn rebuild_highlighter(&mut self) {
+        self.highlighter =
+            build_highlighter(&self.theme_set, &self.theme_names, self.active_theme_index);
+    }
+
+    fn highlight_with_syntax(&self, source: &str, syntax: &SyntaxReference) -> Vec<Line<'static>> {
         match self.highlighter.highlight_lines(
             LinesWithEndings::from(source),
             syntax,
@@ -49,21 +134,32 @@ impl SyntaxHighlighter {
     }
 }
 
-fn select_theme(theme_set: &ThemeSet) -> Theme {
+fn select_theme_index(theme_names: &[String]) -> usize {
     const PREFERRED_THEME_NAMES: &[&str] = &["base16-ocean.dark", "base16-eighties.dark"];
 
-    for name in PREFERRED_THEME_NAMES {
-        if let Some(theme) = theme_set.themes.get(*name) {
-            return theme.clone();
+    for preferred in PREFERRED_THEME_NAMES {
+        if let Some(index) = theme_names
+            .iter()
+            .position(|name| name.eq_ignore_ascii_case(preferred))
+        {
+            return index;
         }
     }
 
-    theme_set
-        .themes
-        .values()
-        .next()
+    0
+}
+
+fn build_highlighter(
+    theme_set: &ThemeSet,
+    theme_names: &[String],
+    active_theme_index: usize,
+) -> Highlighter {
+    let theme = theme_names
+        .get(active_theme_index)
+        .and_then(|name| theme_set.themes.get(name))
         .cloned()
-        .unwrap_or_default()
+        .unwrap_or_default();
+    Highlighter::new(theme).line_numbers(false)
 }
 
 fn resolve_syntax<'a>(syntax_set: &'a SyntaxSet, lang: &str) -> &'a SyntaxReference {
@@ -71,6 +167,18 @@ fn resolve_syntax<'a>(syntax_set: &'a SyntaxSet, lang: &str) -> &'a SyntaxRefere
     syntax_set
         .find_syntax_by_token(&normalized)
         .or_else(|| syntax_set.find_syntax_by_name(&normalized))
+        .unwrap_or_else(|| syntax_set.find_syntax_plain_text())
+}
+
+fn resolve_syntax_for_path<'a>(syntax_set: &'a SyntaxSet, path: &str) -> &'a SyntaxReference {
+    if let Some(ext) = path.rsplit('.').next().filter(|value| *value != path) {
+        if let Some(syntax) = syntax_set.find_syntax_by_extension(ext) {
+            return syntax;
+        }
+    }
+
+    syntax_set
+        .find_syntax_by_name(path)
         .unwrap_or_else(|| syntax_set.find_syntax_plain_text())
 }
 

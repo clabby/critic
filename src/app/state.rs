@@ -5,7 +5,7 @@ use crate::domain::{
     PullRequestDiffFile, PullRequestSummary, ReviewThread, Route, review_comment_is_outdated,
 };
 use crate::search::fuzzy::rank_pull_requests;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Spinner frames used for active async operations.
 pub const SPINNER_FRAMES: [&str; 8] = ["⢎⡰", "⢎⡡", "⢎⡑", "⢎⠱", "⠎⡱", "⢊⡱", "⢌⡱", "⢆⡱"];
@@ -204,12 +204,16 @@ pub struct ReviewScreenState {
     pub right_scroll: u16,
     pub diff: Option<PullRequestDiffData>,
     pub diff_error: Option<String>,
+    pub selected_diff_row: usize,
     pub selected_diff_file: usize,
     pub diff_scroll: u16,
     pub selected_hunk: usize,
+    pub diff_search_focused: bool,
+    pub diff_search_query: String,
     pub nodes: Vec<ListNode>,
     pub reply_drafts: HashMap<String, String>,
     collapsed: HashSet<String>,
+    diff_collapsed_dirs: HashSet<String>,
     threads_by_key: HashMap<String, ReviewThread>,
 }
 
@@ -224,12 +228,16 @@ impl ReviewScreenState {
             right_scroll: 0,
             diff: None,
             diff_error: None,
+            selected_diff_row: 0,
             selected_diff_file: 0,
             diff_scroll: 0,
             selected_hunk: 0,
+            diff_search_focused: false,
+            diff_search_query: String::new(),
             nodes: Vec::new(),
             reply_drafts: HashMap::new(),
             collapsed: HashSet::new(),
+            diff_collapsed_dirs: HashSet::new(),
             threads_by_key: HashMap::new(),
         };
 
@@ -435,14 +443,14 @@ impl ReviewScreenState {
                 self.right_scroll = 0;
             }
             ReviewTab::Diff => {
-                let file_count = self.diff.as_ref().map(|diff| diff.files.len()).unwrap_or(0);
-                if file_count == 0 {
+                let rows = self.diff_tree_rows();
+                if rows.is_empty() {
+                    self.selected_diff_row = 0;
                     self.selected_diff_file = 0;
                     return;
                 }
-                self.selected_diff_file = (self.selected_diff_file + 1).min(file_count - 1);
-                self.diff_scroll = 0;
-                self.selected_hunk = 0;
+                self.selected_diff_row = (self.selected_diff_row + 1).min(rows.len() - 1);
+                self.sync_selected_diff_file_from_tree_row(&rows);
             }
         }
     }
@@ -459,14 +467,14 @@ impl ReviewScreenState {
                 self.right_scroll = 0;
             }
             ReviewTab::Diff => {
-                let file_count = self.diff.as_ref().map(|diff| diff.files.len()).unwrap_or(0);
-                if file_count == 0 {
+                let rows = self.diff_tree_rows();
+                if rows.is_empty() {
+                    self.selected_diff_row = 0;
                     self.selected_diff_file = 0;
                     return;
                 }
-                self.selected_diff_file = self.selected_diff_file.saturating_sub(1);
-                self.diff_scroll = 0;
-                self.selected_hunk = 0;
+                self.selected_diff_row = self.selected_diff_row.saturating_sub(1);
+                self.sync_selected_diff_file_from_tree_row(&rows);
             }
         }
     }
@@ -527,25 +535,46 @@ impl ReviewScreenState {
     pub fn clear_diff(&mut self) {
         self.diff = None;
         self.diff_error = None;
+        self.selected_diff_row = 0;
         self.selected_diff_file = 0;
         self.diff_scroll = 0;
         self.selected_hunk = 0;
+        self.diff_collapsed_dirs.clear();
+        self.diff_search_focused = false;
     }
 
     pub fn set_diff(&mut self, diff: PullRequestDiffData) {
         self.diff = Some(diff);
         self.diff_error = None;
         self.selected_diff_file = 0;
+        self.selected_diff_row = 0;
         self.diff_scroll = 0;
         self.selected_hunk = 0;
+        self.diff_collapsed_dirs.clear();
+        self.diff_search_focused = false;
+
+        let rows = self.diff_tree_rows();
+        if let Some((index, row)) = rows
+            .iter()
+            .enumerate()
+            .find(|(_, row)| row.file_index.is_some())
+        {
+            self.selected_diff_row = index;
+            self.selected_diff_file = row.file_index.unwrap_or(0);
+        }
+
+        self.jump_to_first_available_hunk();
     }
 
     pub fn set_diff_error(&mut self, error: String) {
         self.diff = None;
         self.diff_error = Some(error);
+        self.selected_diff_row = 0;
         self.selected_diff_file = 0;
         self.diff_scroll = 0;
         self.selected_hunk = 0;
+        self.diff_collapsed_dirs.clear();
+        self.diff_search_focused = false;
     }
 
     pub fn active_tab(&self) -> ReviewTab {
@@ -575,57 +604,335 @@ impl ReviewScreenState {
             .unwrap_or(0)
     }
 
-    pub fn jump_next_hunk(&mut self) {
-        let Some(hunk_starts) = self
-            .selected_diff_file()
-            .map(|file| file.hunk_starts.clone())
-        else {
+    pub fn diff_tree_rows(&self) -> Vec<DiffTreeRow> {
+        let Some(diff) = self.diff.as_ref() else {
+            return Vec::new();
+        };
+        if self.diff_search_query.trim().is_empty() {
+            return build_diff_tree_rows(diff, &self.diff_collapsed_dirs);
+        }
+
+        let expanded_rows = build_diff_tree_rows(diff, &HashSet::new());
+        filter_diff_tree_rows(&expanded_rows, diff, &self.diff_search_query)
+    }
+
+    pub fn selected_diff_tree_row(&self) -> usize {
+        self.selected_diff_row
+    }
+
+    pub fn toggle_selected_diff_directory_collapsed(&mut self) {
+        let rows = self.diff_tree_rows();
+        let Some(row) = rows.get(self.selected_diff_row) else {
             return;
         };
-        if hunk_starts.is_empty() {
+        if !row.is_directory {
             return;
         }
 
+        if self.diff_collapsed_dirs.contains(&row.key) {
+            self.diff_collapsed_dirs.remove(&row.key);
+        } else {
+            self.diff_collapsed_dirs.insert(row.key.clone());
+        }
+
+        let updated_rows = self.diff_tree_rows();
+        if let Some(index) = updated_rows
+            .iter()
+            .position(|candidate| candidate.key == row.key)
+        {
+            self.selected_diff_row = index;
+        } else {
+            self.selected_diff_row = self
+                .selected_diff_row
+                .min(updated_rows.len().saturating_sub(1));
+        }
+        self.sync_selected_diff_file_from_tree_row(&updated_rows);
+    }
+
+    pub fn focus_diff_search(&mut self) {
+        self.diff_search_focused = true;
+    }
+
+    pub fn unfocus_diff_search(&mut self) {
+        self.diff_search_focused = false;
+    }
+
+    pub fn is_diff_search_focused(&self) -> bool {
+        self.diff_search_focused
+    }
+
+    pub fn diff_search_query(&self) -> &str {
+        &self.diff_search_query
+    }
+
+    pub fn diff_search_push_char(&mut self, ch: char) {
+        self.diff_search_query.push(ch);
+        self.realign_diff_selection_for_filter();
+    }
+
+    pub fn diff_search_backspace(&mut self) {
+        self.diff_search_query.pop();
+        self.realign_diff_selection_for_filter();
+    }
+
+    pub fn jump_next_hunk(&mut self) {
+        let Some(diff) = self.diff.as_ref() else {
+            return;
+        };
+        let files = self.navigable_diff_files();
+        if files.is_empty() {
+            return;
+        }
+
+        let current_file = self.selected_diff_file;
         let current = usize::from(self.diff_scroll);
-        let next = hunk_starts
-            .iter()
-            .copied()
-            .find(|start| *start > current)
-            .unwrap_or(hunk_starts[0]);
-        self.diff_scroll = u16::try_from(next).unwrap_or(u16::MAX);
-        self.selected_hunk = hunk_starts
-            .iter()
-            .position(|start| *start == next)
-            .unwrap_or(0);
+        let Some(current_pos) = files.iter().position(|index| *index == current_file) else {
+            return;
+        };
+
+        if let Some(file) = diff.files.get(current_file) {
+            if let Some(next_hunk) = file
+                .hunk_starts
+                .iter()
+                .copied()
+                .find(|start| *start > current)
+            {
+                let hunk_index = file
+                    .hunk_starts
+                    .iter()
+                    .position(|start| *start == next_hunk)
+                    .unwrap_or(0);
+                self.set_active_hunk(current_file, next_hunk, hunk_index);
+                return;
+            }
+        }
+
+        for offset in 1..files.len() {
+            let file_index = files[(current_pos + offset) % files.len()];
+            let Some(file) = diff.files.get(file_index) else {
+                continue;
+            };
+            if let Some(next_hunk) = file.hunk_starts.first().copied() {
+                self.set_active_hunk(file_index, next_hunk, 0);
+                return;
+            }
+        }
+
+        if let Some(file) = diff.files.get(current_file) {
+            if let Some(next_hunk) = file.hunk_starts.first().copied() {
+                self.set_active_hunk(current_file, next_hunk, 0);
+            }
+        }
     }
 
     pub fn jump_prev_hunk(&mut self) {
-        let Some(hunk_starts) = self
-            .selected_diff_file()
-            .map(|file| file.hunk_starts.clone())
-        else {
+        let Some(diff) = self.diff.as_ref() else {
             return;
         };
-        if hunk_starts.is_empty() {
+        let files = self.navigable_diff_files();
+        if files.is_empty() {
             return;
         }
 
+        let current_file = self.selected_diff_file;
         let current = usize::from(self.diff_scroll);
-        let previous = hunk_starts
-            .iter()
-            .copied()
-            .rev()
-            .find(|start| *start < current)
-            .unwrap_or_else(|| *hunk_starts.last().unwrap_or(&0));
-        self.diff_scroll = u16::try_from(previous).unwrap_or(u16::MAX);
-        self.selected_hunk = hunk_starts
-            .iter()
-            .position(|start| *start == previous)
-            .unwrap_or(0);
+        let Some(current_pos) = files.iter().position(|index| *index == current_file) else {
+            return;
+        };
+
+        if let Some(file) = diff.files.get(current_file) {
+            if let Some(previous_hunk) = file
+                .hunk_starts
+                .iter()
+                .copied()
+                .rev()
+                .find(|start| *start < current)
+            {
+                let hunk_index = file
+                    .hunk_starts
+                    .iter()
+                    .position(|start| *start == previous_hunk)
+                    .unwrap_or(0);
+                self.set_active_hunk(current_file, previous_hunk, hunk_index);
+                return;
+            }
+        }
+
+        for offset in 1..files.len() {
+            let file_index = files[(current_pos + files.len() - offset) % files.len()];
+            let Some(file) = diff.files.get(file_index) else {
+                continue;
+            };
+            if let Some(previous_hunk) = file.hunk_starts.last().copied() {
+                let hunk_index = file.hunk_starts.len().saturating_sub(1);
+                self.set_active_hunk(file_index, previous_hunk, hunk_index);
+                return;
+            }
+        }
+
+        if let Some(file) = diff.files.get(current_file) {
+            if let Some(previous_hunk) = file.hunk_starts.last().copied() {
+                let hunk_index = file.hunk_starts.len().saturating_sub(1);
+                self.set_active_hunk(current_file, previous_hunk, hunk_index);
+            }
+        }
     }
 
     pub fn is_collapsed(&self, key: &str) -> bool {
         self.collapsed.contains(key)
+    }
+
+    fn sync_selected_diff_file_from_tree_row(&mut self, rows: &[DiffTreeRow]) {
+        let Some(row) = rows.get(self.selected_diff_row) else {
+            return;
+        };
+        let Some(file_index) = row.file_index else {
+            return;
+        };
+        if file_index == self.selected_diff_file {
+            return;
+        }
+        self.selected_diff_file = file_index;
+        self.diff_scroll = 0;
+        self.selected_hunk = 0;
+    }
+
+    fn realign_diff_selection_for_filter(&mut self) {
+        let rows = self.diff_tree_rows();
+        if rows.is_empty() {
+            self.selected_diff_row = 0;
+            self.selected_diff_file = 0;
+            return;
+        }
+
+        let current_file = rows
+            .get(self.selected_diff_row)
+            .and_then(|row| row.file_index)
+            .or_else(|| {
+                rows.iter()
+                    .position(|row| row.file_index == Some(self.selected_diff_file))
+                    .and_then(|index| rows.get(index).and_then(|row| row.file_index))
+            });
+
+        if let Some(file_index) = current_file {
+            if let Some(index) = rows
+                .iter()
+                .position(|row| row.file_index == Some(file_index))
+            {
+                self.selected_diff_row = index;
+                if file_index != self.selected_diff_file {
+                    self.selected_diff_file = file_index;
+                    self.diff_scroll = 0;
+                    self.selected_hunk = 0;
+                }
+                return;
+            }
+        }
+
+        if let Some((index, row)) = rows
+            .iter()
+            .enumerate()
+            .find(|(_, row)| row.file_index.is_some())
+        {
+            self.selected_diff_row = index;
+            if let Some(file_index) = row.file_index {
+                self.selected_diff_file = file_index;
+                self.diff_scroll = 0;
+                self.selected_hunk = 0;
+            }
+        } else {
+            self.selected_diff_row = 0;
+            self.selected_diff_file = 0;
+        }
+    }
+
+    fn jump_to_first_available_hunk(&mut self) {
+        let Some(diff) = self.diff.as_ref() else {
+            return;
+        };
+
+        let Some((file_index, hunk_start)) =
+            diff.files.iter().enumerate().find_map(|(index, file)| {
+                file.hunk_starts.first().copied().map(|hunk| (index, hunk))
+            })
+        else {
+            return;
+        };
+
+        self.set_active_hunk(file_index, hunk_start, 0);
+    }
+
+    fn set_active_hunk(&mut self, file_index: usize, hunk_start: usize, hunk_index: usize) {
+        self.ensure_diff_file_expanded(file_index);
+        self.selected_diff_file = file_index;
+        self.selected_hunk = hunk_index;
+        self.diff_scroll = u16::try_from(hunk_start).unwrap_or(u16::MAX);
+
+        let rows = self.diff_tree_rows();
+        if let Some(row_index) = rows
+            .iter()
+            .position(|row| row.file_index == Some(file_index))
+        {
+            self.selected_diff_row = row_index;
+        }
+    }
+
+    fn ensure_diff_file_expanded(&mut self, file_index: usize) {
+        if !self.diff_search_query.trim().is_empty() {
+            return;
+        }
+
+        let Some(path) = self
+            .diff
+            .as_ref()
+            .and_then(|diff| diff.files.get(file_index))
+            .map(|file| file.path.clone())
+        else {
+            return;
+        };
+
+        let mut key = String::new();
+        let parts = path
+            .split('/')
+            .filter(|segment| !segment.is_empty())
+            .collect::<Vec<_>>();
+
+        for segment in parts.iter().take(parts.len().saturating_sub(1)) {
+            if !key.is_empty() {
+                key.push('/');
+            }
+            key.push_str(segment);
+            self.diff_collapsed_dirs.remove(&key);
+        }
+    }
+
+    fn navigable_diff_files(&self) -> Vec<usize> {
+        let rows = self.diff_tree_rows();
+        let mut seen = HashSet::new();
+        let mut files = Vec::new();
+        for row in rows {
+            let Some(file_index) = row.file_index else {
+                continue;
+            };
+            if seen.insert(file_index) {
+                files.push(file_index);
+            }
+        }
+
+        if !files.is_empty() {
+            return files;
+        }
+
+        self.diff
+            .as_ref()
+            .map(|diff| {
+                diff.files
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, file)| (!file.hunk_starts.is_empty()).then_some(index))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -634,6 +941,16 @@ impl ReviewScreenState {
 pub enum ReviewTab {
     Threads,
     Diff,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiffTreeRow {
+    pub key: String,
+    pub label: String,
+    pub depth: usize,
+    pub is_directory: bool,
+    pub is_collapsed: bool,
+    pub file_index: Option<usize>,
 }
 
 fn append_reply_nodes(
@@ -702,4 +1019,336 @@ fn review_group_key(review_id: u64) -> String {
 
 fn is_review_group_key(key: &str) -> bool {
     key.starts_with("review-group:")
+}
+
+#[derive(Debug, Default, Clone)]
+struct DiffTreeNode {
+    children: BTreeMap<String, DiffTreeNode>,
+    files: Vec<usize>,
+}
+
+fn build_diff_tree_rows(
+    diff: &PullRequestDiffData,
+    collapsed: &HashSet<String>,
+) -> Vec<DiffTreeRow> {
+    let mut root = DiffTreeNode::default();
+
+    for (index, file) in diff.files.iter().enumerate() {
+        insert_diff_path(&mut root, &file.path, index);
+    }
+    sort_diff_tree_files(&mut root, diff);
+
+    let mut rows = Vec::new();
+    append_diff_tree_rows(&root, "", 0, &mut rows, diff, collapsed);
+    rows
+}
+
+fn filter_diff_tree_rows(
+    rows: &[DiffTreeRow],
+    diff: &PullRequestDiffData,
+    query: &str,
+) -> Vec<DiffTreeRow> {
+    let query = query.trim().to_ascii_lowercase();
+    if query.is_empty() {
+        return rows.to_vec();
+    }
+
+    let mut include = HashSet::<String>::new();
+    let mut parent_stack = Vec::<String>::new();
+
+    for row in rows {
+        while parent_stack.len() > row.depth {
+            parent_stack.pop();
+        }
+
+        if row.is_directory {
+            parent_stack.push(row.key.clone());
+            continue;
+        }
+
+        let matches = row
+            .file_index
+            .and_then(|file_index| diff.files.get(file_index))
+            .map(|file| file.path.to_ascii_lowercase().contains(&query))
+            .unwrap_or(false);
+
+        if matches {
+            include.insert(row.key.clone());
+            for key in &parent_stack {
+                include.insert(key.clone());
+            }
+        }
+    }
+
+    rows.iter()
+        .filter(|row| include.contains(&row.key))
+        .cloned()
+        .map(|mut row| {
+            row.is_collapsed = false;
+            row
+        })
+        .collect()
+}
+
+fn insert_diff_path(root: &mut DiffTreeNode, path: &str, file_index: usize) {
+    let parts = path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    if parts.is_empty() {
+        root.files.push(file_index);
+        return;
+    }
+
+    if parts.len() == 1 {
+        root.files.push(file_index);
+        return;
+    }
+
+    let mut node = root;
+    for segment in &parts[..parts.len() - 1] {
+        node = node.children.entry((*segment).to_owned()).or_default();
+    }
+    node.files.push(file_index);
+}
+
+fn sort_diff_tree_files(node: &mut DiffTreeNode, diff: &PullRequestDiffData) {
+    node.files
+        .sort_by(|a, b| diff.files[*a].path.cmp(&diff.files[*b].path));
+    for child in node.children.values_mut() {
+        sort_diff_tree_files(child, diff);
+    }
+}
+
+fn append_diff_tree_rows(
+    node: &DiffTreeNode,
+    parent_key: &str,
+    depth: usize,
+    rows: &mut Vec<DiffTreeRow>,
+    diff: &PullRequestDiffData,
+    collapsed: &HashSet<String>,
+) {
+    for (segment, child) in &node.children {
+        let (dir_label, dir_key, compressed) = compress_directory(parent_key, segment, child);
+        let is_collapsed = collapsed.contains(&dir_key);
+
+        rows.push(DiffTreeRow {
+            key: dir_key.clone(),
+            label: dir_label,
+            depth,
+            is_directory: true,
+            is_collapsed,
+            file_index: None,
+        });
+
+        if !is_collapsed {
+            append_diff_tree_rows(compressed, &dir_key, depth + 1, rows, diff, collapsed);
+        }
+    }
+
+    for file_index in &node.files {
+        let file = &diff.files[*file_index];
+        let label = file
+            .path
+            .rsplit('/')
+            .next()
+            .unwrap_or(file.path.as_str())
+            .to_owned();
+        rows.push(DiffTreeRow {
+            key: format!("file:{}", file.path),
+            label,
+            depth,
+            is_directory: false,
+            is_collapsed: false,
+            file_index: Some(*file_index),
+        });
+    }
+}
+
+fn compress_directory<'a>(
+    parent_key: &str,
+    initial_segment: &str,
+    initial_node: &'a DiffTreeNode,
+) -> (String, String, &'a DiffTreeNode) {
+    let mut label = initial_segment.to_owned();
+    let mut key = join_path(parent_key, initial_segment);
+    let mut node = initial_node;
+
+    while node.files.is_empty() && node.children.len() == 1 {
+        let Some((segment, next)) = node.children.iter().next() else {
+            break;
+        };
+        label.push('/');
+        label.push_str(segment);
+        key.push('/');
+        key.push_str(segment);
+        node = next;
+    }
+
+    (label, key, node)
+}
+
+fn join_path(parent: &str, segment: &str) -> String {
+    if parent.is_empty() {
+        segment.to_owned()
+    } else {
+        format!("{parent}/{segment}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ReviewScreenState, build_diff_tree_rows};
+    use crate::domain::{
+        PullRequestData, PullRequestDiffData, PullRequestDiffFile, PullRequestDiffFileStatus,
+        PullRequestSummary,
+    };
+    use std::collections::HashSet;
+
+    fn diff_file(path: &str) -> PullRequestDiffFile {
+        PullRequestDiffFile {
+            path: path.to_owned(),
+            status: PullRequestDiffFileStatus::Modified,
+            rows: Vec::new(),
+            hunk_starts: Vec::new(),
+        }
+    }
+
+    fn build_review_state() -> ReviewScreenState {
+        let pull = PullRequestSummary {
+            owner: "owner".to_owned(),
+            repo: "repo".to_owned(),
+            number: 42,
+            title: "Example".to_owned(),
+            author: "dev".to_owned(),
+            head_ref: "feature".to_owned(),
+            base_ref: "main".to_owned(),
+            head_sha: "headsha".to_owned(),
+            base_sha: "basesha".to_owned(),
+            html_url: Some("https://example.com".to_owned()),
+            updated_at: "now".to_owned(),
+            updated_at_unix_ms: 0,
+            review_status: None,
+        };
+
+        let data = PullRequestData {
+            owner: "owner".to_owned(),
+            repo: "repo".to_owned(),
+            pull_number: 42,
+            head_ref: "feature".to_owned(),
+            base_ref: "main".to_owned(),
+            head_sha: "headsha".to_owned(),
+            base_sha: "basesha".to_owned(),
+            changed_files: Vec::new(),
+            comments: Vec::new(),
+        };
+
+        ReviewScreenState::new(pull, data)
+    }
+
+    #[test]
+    fn compresses_single_directory_chain() {
+        let diff = PullRequestDiffData {
+            files: vec![
+                diff_file("one/two/three/a.rs"),
+                diff_file("one/two/three/b.rs"),
+                diff_file("one/two/three/c.rs"),
+            ],
+        };
+
+        let rows = build_diff_tree_rows(&diff, &HashSet::new());
+        assert!(!rows.is_empty());
+        assert!(rows[0].is_directory);
+        assert_eq!(rows[0].label, "one/two/three");
+        assert_eq!(rows[0].depth, 0);
+    }
+
+    #[test]
+    fn does_not_compress_across_branching_directory() {
+        let diff = PullRequestDiffData {
+            files: vec![diff_file("one/two/a.rs"), diff_file("one/three/b.rs")],
+        };
+
+        let rows = build_diff_tree_rows(&diff, &HashSet::new());
+        assert!(!rows.is_empty());
+        assert!(rows[0].is_directory);
+        assert_eq!(rows[0].label, "one");
+    }
+
+    #[test]
+    fn set_diff_selects_first_available_hunk() {
+        let mut review = build_review_state();
+        let mut first = diff_file("alpha.rs");
+        let mut second = diff_file("beta.rs");
+        first.hunk_starts = vec![];
+        second.hunk_starts = vec![12, 40];
+
+        review.set_diff(PullRequestDiffData {
+            files: vec![first, second],
+        });
+
+        assert_eq!(review.selected_diff_file, 1);
+        assert_eq!(review.diff_scroll, 12);
+        assert_eq!(review.selected_hunk, 0);
+    }
+
+    #[test]
+    fn jump_next_hunk_wraps_to_next_file() {
+        let mut review = build_review_state();
+        let mut first = diff_file("alpha.rs");
+        let mut second = diff_file("beta.rs");
+        first.hunk_starts = vec![4, 9];
+        second.hunk_starts = vec![3];
+
+        review.set_diff(PullRequestDiffData {
+            files: vec![first, diff_file("no_hunks.rs"), second],
+        });
+        review.selected_diff_file = 0;
+        review.diff_scroll = 9;
+
+        review.jump_next_hunk();
+
+        assert_eq!(review.selected_diff_file, 2);
+        assert_eq!(review.diff_scroll, 3);
+        assert_eq!(review.selected_hunk, 0);
+    }
+
+    #[test]
+    fn jump_prev_hunk_wraps_to_previous_file() {
+        let mut review = build_review_state();
+        let mut first = diff_file("alpha.rs");
+        let mut second = diff_file("beta.rs");
+        first.hunk_starts = vec![4, 9];
+        second.hunk_starts = vec![3, 8];
+
+        review.set_diff(PullRequestDiffData {
+            files: vec![first, diff_file("no_hunks.rs"), second],
+        });
+        review.selected_diff_file = 0;
+        review.diff_scroll = 4;
+
+        review.jump_prev_hunk();
+
+        assert_eq!(review.selected_diff_file, 2);
+        assert_eq!(review.diff_scroll, 8);
+        assert_eq!(review.selected_hunk, 1);
+    }
+
+    #[test]
+    fn diff_search_filters_rows_and_updates_selection() {
+        let mut review = build_review_state();
+        review.set_diff(PullRequestDiffData {
+            files: vec![diff_file("src/lib.rs"), diff_file("docs/readme.md")],
+        });
+
+        review.diff_search_push_char('d');
+        review.diff_search_push_char('o');
+
+        let rows = review.diff_tree_rows();
+        assert!(!rows.is_empty());
+        assert!(rows.iter().all(|row| {
+            row.is_directory || row.key.contains("docs/readme.md") || row.key.contains("docs")
+        }));
+        assert_eq!(review.selected_diff_file, 1);
+    }
 }

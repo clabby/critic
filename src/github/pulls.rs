@@ -194,39 +194,29 @@ pub async fn fetch_open_pull_requests(
     let mapped = pulls
         .into_iter()
         .map(|pull| {
-            let head = pull.head;
-            let base = pull.base;
-            let updated = pull.updated_at.or(pull.created_at);
-            let updated_at = updated
-                .map(|time| time.to_rfc3339())
-                .unwrap_or_else(|| "unknown".to_owned());
-            let updated_ms = updated
-                .map(|time| time.timestamp_millis())
-                .unwrap_or_default();
-
-            PullRequestSummary {
-                owner: repository.owner.clone(),
-                repo: repository.repo.clone(),
-                number: pull.number,
-                title: pull.title.unwrap_or_else(|| "(untitled)".to_owned()),
-                author: pull
-                    .user
-                    .as_ref()
-                    .map(|user| user.login.clone())
-                    .unwrap_or_else(|| "unknown".to_owned()),
-                head_ref: head.ref_field,
-                base_ref: base.ref_field,
-                head_sha: head.sha,
-                base_sha: base.sha,
-                html_url: pull.html_url.map(|url| url.to_string()),
-                updated_at,
-                updated_at_unix_ms: updated_ms,
-                review_status: review_statuses.get(&pull.number).copied().flatten(),
-            }
+            let number = pull.number;
+            map_pull_request(
+                repository,
+                pull,
+                review_statuses.get(&number).copied().flatten(),
+            )
         })
         .collect();
 
     Ok(mapped)
+}
+
+/// Fetches a single pull request summary by number.
+pub async fn fetch_pull_request_summary(
+    client: &octocrab::Octocrab,
+    repository: &RepositoryRef,
+    pull_number: u64,
+) -> Result<PullRequestSummary> {
+    let pull = client
+        .pulls(&repository.owner, &repository.repo)
+        .get(pull_number)
+        .await?;
+    Ok(map_pull_request(repository, pull, None))
 }
 
 async fn fetch_review_statuses(
@@ -297,4 +287,40 @@ async fn fetch_review_statuses(
     }
 
     out
+}
+
+fn map_pull_request(
+    repository: &RepositoryRef,
+    pull: octocrab::models::pulls::PullRequest,
+    review_status: Option<PullRequestReviewStatus>,
+) -> PullRequestSummary {
+    let head = pull.head;
+    let base = pull.base;
+    let updated = pull.updated_at.or(pull.created_at);
+    let updated_at = updated
+        .map(|time| time.to_rfc3339())
+        .unwrap_or_else(|| "unknown".to_owned());
+    let updated_ms = updated
+        .map(|time| time.timestamp_millis())
+        .unwrap_or_default();
+
+    PullRequestSummary {
+        owner: repository.owner.clone(),
+        repo: repository.repo.clone(),
+        number: pull.number,
+        title: pull.title.unwrap_or_else(|| "(untitled)".to_owned()),
+        author: pull
+            .user
+            .as_ref()
+            .map(|user| user.login.clone())
+            .unwrap_or_else(|| "unknown".to_owned()),
+        head_ref: head.ref_field,
+        base_ref: base.ref_field,
+        head_sha: head.sha,
+        base_sha: base.sha,
+        html_url: pull.html_url.map(|url| url.to_string()),
+        updated_at,
+        updated_at_unix_ms: updated_ms,
+        review_status,
+    }
 }

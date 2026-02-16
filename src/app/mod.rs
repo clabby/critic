@@ -7,7 +7,7 @@ pub mod state;
 
 use crate::app::events::{
     MutationRequest, WorkerMessage, spawn_apply_mutation, spawn_load_pull_request_data,
-    spawn_load_pull_request_diff, spawn_load_pull_requests,
+    spawn_load_pull_request_diff, spawn_load_pull_requests, spawn_load_specific_pull_request,
 };
 use crate::app::state::{AppState, ReviewSubmissionEvent, ReviewTab};
 use crate::domain::CommentRef;
@@ -36,6 +36,8 @@ use tokio::sync::mpsc::{self, UnboundedReceiver};
 pub struct AppConfig {
     pub owner: Option<String>,
     pub repo: Option<String>,
+    pub pull: Option<u64>,
+    pub syntax_theme: String,
 }
 
 struct DataContext {
@@ -49,18 +51,29 @@ pub async fn run(config: AppConfig) -> anyhow::Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<WorkerMessage>();
 
     let mut state = AppState::default();
-    state.begin_operation("Loading open pull requests");
 
     let client = create_client()
         .await
         .context("failed to create authenticated GitHub client")?;
 
-    spawn_load_pull_requests(
-        tx.clone(),
-        client.clone(),
-        config.owner.clone(),
-        config.repo.clone(),
-    );
+    if let Some(pull_number) = config.pull {
+        state.begin_operation(format!("Loading pull request #{pull_number}"));
+        spawn_load_specific_pull_request(
+            tx.clone(),
+            client.clone(),
+            config.owner.clone(),
+            config.repo.clone(),
+            pull_number,
+        );
+    } else {
+        state.begin_operation("Loading open pull requests");
+        spawn_load_pull_requests(
+            tx.clone(),
+            client.clone(),
+            config.owner.clone(),
+            config.repo.clone(),
+        );
+    }
 
     let context = DataContext {
         client,
@@ -70,6 +83,13 @@ pub async fn run(config: AppConfig) -> anyhow::Result<()> {
 
     let mut terminal = setup_terminal()?;
     let mut markdown = MarkdownRenderer::new();
+    let configured_theme = config.syntax_theme.trim();
+    if !configured_theme.is_empty() && !markdown.set_syntax_theme(configured_theme) {
+        state.error_message = Some(format!(
+            "unknown syntax theme `{configured_theme}`; using `{}`",
+            markdown.current_syntax_theme_name()
+        ));
+    }
 
     let result = run_event_loop(
         &mut terminal,
@@ -97,7 +117,8 @@ async fn run_event_loop(
         state.advance_spinner();
 
         while let Ok(message) = rx.try_recv() {
-            process_worker_message(state, message);
+            process_worker_message(state, message, markdown, context, tx);
+            maybe_spawn_search_load(state, context, tx);
         }
 
         terminal.draw(|frame| ui::render(frame, state, markdown))?;
@@ -110,7 +131,7 @@ async fn run_event_loop(
             match event::read()? {
                 Event::Key(key_event) => {
                     if key_event.kind == KeyEventKind::Press {
-                        handle_key_event(terminal, state, context, tx, key_event);
+                        handle_key_event(terminal, state, context, tx, key_event, markdown);
                     }
                 }
                 Event::Mouse(mouse_event) => {
@@ -124,13 +145,21 @@ async fn run_event_loop(
     Ok(())
 }
 
-fn process_worker_message(state: &mut AppState, message: WorkerMessage) {
+fn process_worker_message(
+    state: &mut AppState,
+    message: WorkerMessage,
+    markdown: &mut MarkdownRenderer,
+    context: &DataContext,
+    tx: &tokio::sync::mpsc::UnboundedSender<WorkerMessage>,
+) {
     match message {
         WorkerMessage::PullRequestsLoaded {
             repository_label,
             result,
         } => {
-            state.end_operation();
+            if state.route == Route::Search {
+                state.end_operation();
+            }
             state.set_repository_label(repository_label);
 
             match result {
@@ -149,6 +178,7 @@ fn process_worker_message(state: &mut AppState, message: WorkerMessage) {
             match result {
                 Ok(data) => {
                     state.error_message = None;
+                    markdown.clear_diff_cache();
 
                     if let Some(review) = state.review.as_mut() {
                         if review.pull.number == pull.number
@@ -169,8 +199,29 @@ fn process_worker_message(state: &mut AppState, message: WorkerMessage) {
                 }
             }
         }
+        WorkerMessage::PullRequestResolved {
+            repository_label,
+            pull_number,
+            result,
+        } => {
+            state.end_operation();
+            state.set_repository_label(repository_label);
+
+            match result {
+                Ok(pull) => {
+                    state.error_message = None;
+                    state.begin_operation(format!("Loading pull request #{pull_number}"));
+                    spawn_load_pull_request_data(tx.clone(), context.client.clone(), pull);
+                }
+                Err(error) => {
+                    state.error_message = Some(error);
+                    state.route = Route::Search;
+                }
+            }
+        }
         WorkerMessage::PullRequestDiffLoaded { pull, result } => {
             state.end_operation();
+            markdown.clear_diff_cache();
 
             let Some(review) = state.review.as_mut() else {
                 return;
@@ -202,6 +253,7 @@ fn process_worker_message(state: &mut AppState, message: WorkerMessage) {
             match result {
                 Ok(data) => {
                     state.error_message = None;
+                    markdown.clear_diff_cache();
                     if let Some(review) = state.review.as_mut() {
                         if review.pull.number == pull.number
                             && review.pull.owner == pull.owner
@@ -229,10 +281,11 @@ fn handle_key_event(
     context: &DataContext,
     tx: &tokio::sync::mpsc::UnboundedSender<WorkerMessage>,
     key: KeyEvent,
+    markdown: &mut MarkdownRenderer,
 ) {
     match state.route {
         Route::Search => handle_search_key_event(state, context, tx, key),
-        Route::Review => handle_review_key_event(terminal, state, context, tx, key),
+        Route::Review => handle_review_key_event(terminal, state, context, tx, key, markdown),
     }
 }
 
@@ -359,6 +412,7 @@ fn handle_review_key_event(
     context: &DataContext,
     tx: &tokio::sync::mpsc::UnboundedSender<WorkerMessage>,
     key: KeyEvent,
+    markdown: &mut MarkdownRenderer,
 ) {
     let active_tab = state
         .review
@@ -366,12 +420,34 @@ fn handle_review_key_event(
         .map(|review| review.active_tab())
         .unwrap_or(ReviewTab::Threads);
 
+    if active_tab == ReviewTab::Diff
+        && state
+            .review
+            .as_ref()
+            .is_some_and(|review| review.is_diff_search_focused())
+    {
+        if let Some(review) = state.review.as_mut() {
+            match key.code {
+                KeyCode::Esc | KeyCode::Enter => review.unfocus_diff_search(),
+                KeyCode::Backspace => review.diff_search_backspace(),
+                KeyCode::Char(ch) => {
+                    if !ch.is_control() {
+                        review.diff_search_push_char(ch);
+                    }
+                }
+                _ => {}
+            }
+        }
+        return;
+    }
+
     match key.code {
         KeyCode::Char('q') => {
             state.should_quit = true;
         }
         KeyCode::Char('b') | KeyCode::Esc => {
             state.back_to_search();
+            maybe_spawn_search_load(state, context, tx);
         }
         KeyCode::Tab => {
             if let Some(review) = state.review.as_mut() {
@@ -388,6 +464,11 @@ fn handle_review_key_event(
         KeyCode::Char('W') => {
             if active_tab == ReviewTab::Threads {
                 open_selected_comment_in_browser(state);
+            }
+        }
+        KeyCode::Char('T') => {
+            if active_tab == ReviewTab::Diff {
+                markdown.cycle_syntax_theme();
             }
         }
         KeyCode::Down | KeyCode::Char('j') => {
@@ -415,9 +496,11 @@ fn handle_review_key_event(
             }
         }
         KeyCode::Char('o') | KeyCode::Char('z') => {
-            if active_tab == ReviewTab::Threads {
-                if let Some(review) = state.review.as_mut() {
+            if let Some(review) = state.review.as_mut() {
+                if active_tab == ReviewTab::Threads {
                     review.toggle_selected_thread_collapsed();
+                } else if active_tab == ReviewTab::Diff {
+                    review.toggle_selected_diff_directory_collapsed();
                 }
             }
         }
@@ -518,11 +601,14 @@ fn handle_review_key_event(
                 }
             }
         }
-        KeyCode::Char('s') => {
-            if active_tab == ReviewTab::Threads {
-                send_selected_reply(state, context, tx);
+        KeyCode::Char('s') => match active_tab {
+            ReviewTab::Threads => send_selected_reply(state, context, tx),
+            ReviewTab::Diff => {
+                if let Some(review) = state.review.as_mut() {
+                    review.focus_diff_search();
+                }
             }
-        }
+        },
         KeyCode::Char('C') => {
             if active_tab == ReviewTab::Threads {
                 open_submit_review_editor_and_submit(
@@ -557,6 +643,26 @@ fn handle_review_key_event(
             }
         }
         _ => {}
+    }
+}
+
+fn maybe_spawn_search_load(
+    state: &mut AppState,
+    context: &DataContext,
+    tx: &tokio::sync::mpsc::UnboundedSender<WorkerMessage>,
+) {
+    if state.is_busy() || !state.pull_requests.is_empty() {
+        return;
+    }
+
+    if state.route == Route::Search {
+        state.begin_operation("Loading open pull requests");
+        spawn_load_pull_requests(
+            tx.clone(),
+            context.client.clone(),
+            context.owner.clone(),
+            context.repo.clone(),
+        );
     }
 }
 

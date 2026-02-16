@@ -40,12 +40,16 @@ gauge_label = "black"
 gauge_fill = "#f5cd52"
 gauge_empty = "#5e501e"
 code_padding_fg = "black"
+
+[syntax]
+theme = "base16-ocean.dark"
 "##;
 
 /// Application configuration loaded from disk.
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub theme: ThemePalette,
+    pub syntax_theme: String,
 }
 
 /// Returns the config file path and creates default config if missing.
@@ -65,7 +69,10 @@ pub fn load_or_create() -> Result<AppConfig> {
         .with_context(|| format!("failed to parse TOML in {}", path.display()))?;
     let theme = raw.theme.into_theme()?;
 
-    Ok(AppConfig { theme })
+    Ok(AppConfig {
+        theme,
+        syntax_theme: raw.syntax.theme.unwrap_or_else(default_syntax_theme),
+    })
 }
 
 fn config_path() -> Result<PathBuf> {
@@ -93,6 +100,7 @@ fn ensure_default_config(path: &Path) -> Result<()> {
 #[serde(default)]
 struct RawConfig {
     theme: RawTheme,
+    syntax: RawSyntax,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -123,6 +131,12 @@ struct RawTheme {
     gauge_fill: Option<String>,
     gauge_empty: Option<String>,
     code_padding_fg: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+struct RawSyntax {
+    theme: Option<String>,
 }
 
 impl RawTheme {
@@ -253,6 +267,10 @@ fn parse_color(raw: &str) -> Result<Color> {
     };
 
     Ok(color)
+}
+
+fn default_syntax_theme() -> String {
+    "base16-ocean.dark".to_owned()
 }
 
 #[cfg(test)]
