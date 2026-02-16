@@ -7,7 +7,7 @@ pub mod state;
 
 use crate::app::events::{
     MutationRequest, WorkerMessage, spawn_apply_mutation, spawn_load_pull_request_data,
-    spawn_load_pull_requests,
+    spawn_load_pull_request_diff, spawn_load_pull_requests,
 };
 use crate::app::state::{AppState, ReviewSubmissionEvent, ReviewTab};
 use crate::domain::CommentRef;
@@ -147,7 +147,7 @@ fn process_worker_message(state: &mut AppState, message: WorkerMessage) {
             state.end_operation();
 
             match result {
-                Ok(loaded) => {
+                Ok(data) => {
                     state.error_message = None;
 
                     if let Some(review) = state.review.as_mut() {
@@ -155,28 +155,40 @@ fn process_worker_message(state: &mut AppState, message: WorkerMessage) {
                             && review.pull.owner == pull.owner
                             && review.pull.repo == pull.repo
                         {
-                            review.set_data(loaded.data);
-                            if let Some(diff) = loaded.diff {
-                                review.set_diff(diff);
-                            } else if let Some(error) = loaded.diff_error {
-                                review.set_diff_error(error);
-                            }
+                            review.clear_diff();
+                            review.set_data(data);
                             state.route = Route::Review;
                             return;
                         }
                     }
 
-                    state.open_review(pull, loaded.data);
-                    if let Some(review) = state.review.as_mut() {
-                        if let Some(diff) = loaded.diff {
-                            review.set_diff(diff);
-                        } else if let Some(error) = loaded.diff_error {
-                            review.set_diff_error(error);
-                        }
-                    }
+                    state.open_review(pull, data);
                 }
                 Err(error) => {
                     state.error_message = Some(error);
+                }
+            }
+        }
+        WorkerMessage::PullRequestDiffLoaded { pull, result } => {
+            state.end_operation();
+
+            let Some(review) = state.review.as_mut() else {
+                return;
+            };
+            if review.pull.number != pull.number
+                || review.pull.owner != pull.owner
+                || review.pull.repo != pull.repo
+            {
+                return;
+            }
+
+            match result {
+                Ok(diff) => {
+                    state.error_message = None;
+                    review.set_diff(diff);
+                }
+                Err(error) => {
+                    review.set_diff_error(error);
                 }
             }
         }
@@ -365,11 +377,13 @@ fn handle_review_key_event(
             if let Some(review) = state.review.as_mut() {
                 review.next_tab();
             }
+            load_active_diff_if_needed(state, tx);
         }
         KeyCode::BackTab => {
             if let Some(review) = state.review.as_mut() {
                 review.prev_tab();
             }
+            load_active_diff_if_needed(state, tx);
         }
         KeyCode::Char('W') => {
             if active_tab == ReviewTab::Threads {
@@ -433,15 +447,19 @@ fn handle_review_key_event(
                 return;
             }
 
+            if active_tab == ReviewTab::Diff {
+                if let Some(review) = state.review.as_mut() {
+                    review.clear_diff();
+                }
+                load_active_diff_if_needed(state, tx);
+                return;
+            }
+
             let Some(pull) = state.review.as_ref().map(|review| review.pull.clone()) else {
                 return;
             };
-
-            {
-                state.error_message = None;
-                state.begin_operation(format!("Refreshing pull request #{}", pull.number));
-            }
-
+            state.error_message = None;
+            state.begin_operation(format!("Refreshing pull request #{}", pull.number));
             spawn_load_pull_request_data(tx.clone(), context.client.clone(), pull);
         }
         KeyCode::Char('t') => {
@@ -540,6 +558,32 @@ fn handle_review_key_event(
         }
         _ => {}
     }
+}
+
+fn load_active_diff_if_needed(
+    state: &mut AppState,
+    tx: &tokio::sync::mpsc::UnboundedSender<WorkerMessage>,
+) {
+    if state.is_busy() {
+        return;
+    }
+
+    let Some(review) = state.review.as_ref() else {
+        return;
+    };
+    if review.active_tab() != ReviewTab::Diff {
+        return;
+    }
+    if review.diff.is_some() || review.diff_error.is_some() {
+        return;
+    }
+
+    let pull = review.pull.clone();
+    let changed_files = review.data.changed_files.clone();
+
+    state.error_message = None;
+    state.begin_operation(format!("Loading diff for pull request #{}", pull.number));
+    spawn_load_pull_request_diff(tx.clone(), pull, changed_files);
 }
 
 fn open_reply_editor(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &mut AppState) {

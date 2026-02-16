@@ -1,12 +1,10 @@
 //! Open pull request discovery and mapping for the search screen.
 
 use crate::domain::{PullRequestReviewStatus, PullRequestSummary};
-use octocrab::models::pulls::ReviewState;
 use serde::Deserialize;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use thiserror::Error;
 use tokio::process::Command;
-use tokio::task::JoinSet;
 
 /// Result type for pull request queries.
 pub type Result<T> = std::result::Result<T, PullRequestQueryError>;
@@ -49,6 +47,79 @@ struct GhRepoViewPayload {
     name: String,
     owner: GhRepoViewOwner,
 }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GraphQlPageInfo {
+    has_next_page: bool,
+    end_cursor: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum GraphQlReviewDecision {
+    Approved,
+    ChangesRequested,
+    ReviewRequired,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GraphQlPullNode {
+    number: u64,
+    review_decision: Option<GraphQlReviewDecision>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GraphQlPullConnection {
+    nodes: Vec<GraphQlPullNode>,
+    page_info: GraphQlPageInfo,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQlRepository {
+    #[serde(rename = "pullRequests")]
+    pull_requests: GraphQlPullConnection,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQlData {
+    repository: Option<GraphQlRepository>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQlError {
+    message: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQlResponse {
+    data: Option<GraphQlData>,
+    errors: Option<Vec<GraphQlError>>,
+}
+
+const OPEN_PULL_REVIEW_DECISIONS_QUERY: &str = r#"
+query OpenPullReviewDecisions($owner: String!, $repo: String!, $after: String) {
+  repository(owner: $owner, name: $repo) {
+    pullRequests(
+      first: 100,
+      states: OPEN,
+      after: $after,
+      orderBy: {field: UPDATED_AT, direction: DESC}
+    ) {
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+      nodes {
+        number
+        reviewDecision
+      }
+    }
+  }
+}
+"#;
 
 /// Resolves repository context from explicit args, or `gh repo view` when omitted.
 pub async fn resolve_repository(
@@ -104,7 +175,7 @@ pub async fn fetch_open_pull_requests(
         .await?;
 
     let mut pulls = client.all_pages(first_page).await?;
-    let review_statuses = fetch_review_statuses(client, repository, &pulls).await;
+    let review_statuses = fetch_review_statuses(client, repository).await;
 
     pulls.sort_by(|a, b| {
         let a_ts = a
@@ -161,109 +232,69 @@ pub async fn fetch_open_pull_requests(
 async fn fetch_review_statuses(
     client: &octocrab::Octocrab,
     repository: &RepositoryRef,
-    pulls: &[octocrab::models::pulls::PullRequest],
 ) -> HashMap<u64, Option<PullRequestReviewStatus>> {
-    let mut pending: VecDeque<u64> = pulls.iter().map(|pull| pull.number).collect();
-    let mut out = HashMap::with_capacity(pulls.len());
-    let mut in_flight = JoinSet::new();
-    let concurrency = pending.len().clamp(1, 8);
+    let mut after: Option<String> = None;
+    let mut out = HashMap::new();
 
-    for _ in 0..concurrency {
-        spawn_review_status_task(&mut in_flight, client, repository, &mut pending);
-    }
+    loop {
+        let response: std::result::Result<GraphQlResponse, octocrab::Error> = client
+            .graphql(&serde_json::json!({
+                "query": OPEN_PULL_REVIEW_DECISIONS_QUERY,
+                "variables": {
+                    "owner": &repository.owner,
+                    "repo": &repository.repo,
+                    "after": &after,
+                }
+            }))
+            .await;
 
-    while let Some(joined) = in_flight.join_next().await {
-        if let Ok((number, status)) = joined {
-            out.insert(number, status);
+        let Ok(response) = response else {
+            return out;
+        };
+
+        if response
+            .errors
+            .as_ref()
+            .is_some_and(|errors| !errors.is_empty())
+        {
+            let _messages = response
+                .errors
+                .as_ref()
+                .map(|errors| {
+                    errors
+                        .iter()
+                        .map(|error| error.message.as_str())
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                })
+                .unwrap_or_default();
+            return out;
         }
-        spawn_review_status_task(&mut in_flight, client, repository, &mut pending);
+
+        let Some(connection) = response
+            .data
+            .and_then(|data| data.repository)
+            .map(|repo| repo.pull_requests)
+        else {
+            return out;
+        };
+
+        for pull in &connection.nodes {
+            let status = match pull.review_decision {
+                Some(GraphQlReviewDecision::Approved) => Some(PullRequestReviewStatus::Approved),
+                Some(GraphQlReviewDecision::ChangesRequested) => {
+                    Some(PullRequestReviewStatus::ChangesRequested)
+                }
+                Some(GraphQlReviewDecision::ReviewRequired) | None => None,
+            };
+            out.insert(pull.number, status);
+        }
+
+        if !connection.page_info.has_next_page {
+            break;
+        }
+        after = connection.page_info.end_cursor;
     }
 
     out
-}
-
-fn spawn_review_status_task(
-    in_flight: &mut JoinSet<(u64, Option<PullRequestReviewStatus>)>,
-    client: &octocrab::Octocrab,
-    repository: &RepositoryRef,
-    pending: &mut VecDeque<u64>,
-) {
-    let Some(number) = pending.pop_front() else {
-        return;
-    };
-
-    let client = client.clone();
-    let owner = repository.owner.clone();
-    let repo = repository.repo.clone();
-
-    in_flight.spawn(async move {
-        let status = fetch_pull_review_status(&client, &owner, &repo, number)
-            .await
-            .unwrap_or(None);
-        (number, status)
-    });
-}
-
-async fn fetch_pull_review_status(
-    client: &octocrab::Octocrab,
-    owner: &str,
-    repo: &str,
-    pull_number: u64,
-) -> std::result::Result<Option<PullRequestReviewStatus>, octocrab::Error> {
-    let first_page = client
-        .pulls(owner, repo)
-        .list_reviews(pull_number)
-        .per_page(100)
-        .send()
-        .await?;
-    let reviews = client.all_pages(first_page).await?;
-
-    Ok(classify_review_status(&reviews))
-}
-
-fn classify_review_status(
-    reviews: &[octocrab::models::pulls::Review],
-) -> Option<PullRequestReviewStatus> {
-    let mut latest_by_user: HashMap<&str, PullRequestReviewStatus> = HashMap::new();
-
-    for review in reviews {
-        let Some(user) = review.user.as_ref() else {
-            continue;
-        };
-        let Some(state) = review.state else {
-            continue;
-        };
-
-        match state {
-            ReviewState::Approved => {
-                latest_by_user.insert(user.login.as_str(), PullRequestReviewStatus::Approved);
-            }
-            ReviewState::ChangesRequested => {
-                latest_by_user.insert(
-                    user.login.as_str(),
-                    PullRequestReviewStatus::ChangesRequested,
-                );
-            }
-            ReviewState::Dismissed => {
-                latest_by_user.remove(user.login.as_str());
-            }
-            ReviewState::Open | ReviewState::Pending | ReviewState::Commented => {}
-            _ => {}
-        }
-    }
-
-    if latest_by_user
-        .values()
-        .any(|state| *state == PullRequestReviewStatus::ChangesRequested)
-    {
-        return Some(PullRequestReviewStatus::ChangesRequested);
-    }
-    if latest_by_user
-        .values()
-        .any(|state| *state == PullRequestReviewStatus::Approved)
-    {
-        return Some(PullRequestReviewStatus::Approved);
-    }
-
-    None
 }

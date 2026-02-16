@@ -121,18 +121,15 @@ pub async fn fetch_pull_request_data(
     client: &octocrab::Octocrab,
     pull: &PullRequestSummary,
 ) -> Result<PullRequestData> {
-    let mut changed_files: Vec<String> =
-        pull_request_file_paths(client, &pull.owner, &pull.repo, pull.number)
-            .await?
-            .into_iter()
-            .collect();
-    changed_files.sort();
+    let (changed_files_set, review_threads, issue_comments, review_summaries) = tokio::try_join!(
+        pull_request_file_paths(client, &pull.owner, &pull.repo, pull.number),
+        list_review_comment_threads(client, &pull.owner, &pull.repo, pull.number),
+        list_issue_comments(client, &pull.owner, &pull.repo, pull.number),
+        list_pull_review_summary_comments(client, &pull.owner, &pull.repo, pull.number),
+    )?;
 
-    let review_threads =
-        list_review_comment_threads(client, &pull.owner, &pull.repo, pull.number).await?;
-    let issue_comments = list_issue_comments(client, &pull.owner, &pull.repo, pull.number).await?;
-    let review_summaries =
-        list_pull_review_summary_comments(client, &pull.owner, &pull.repo, pull.number).await?;
+    let mut changed_files: Vec<String> = changed_files_set.into_iter().collect();
+    changed_files.sort();
 
     let mut merged: Vec<(i64, PullRequestComment)> = review_threads
         .into_iter()

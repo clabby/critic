@@ -1,11 +1,11 @@
 //! Pull request diff loading via local git clone + `difft --display json`.
 
 use crate::domain::{
-    PullRequestDiffData, PullRequestDiffFile, PullRequestDiffFileStatus, PullRequestDiffRow,
-    PullRequestDiffRowKind, PullRequestSummary,
+    PullRequestDiffData, PullRequestDiffFile, PullRequestDiffFileStatus,
+    PullRequestDiffHighlightRange, PullRequestDiffRow, PullRequestDiffRowKind, PullRequestSummary,
 };
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -149,6 +149,14 @@ struct RawDifftChunkLine {
 #[derive(Debug, Clone, Deserialize)]
 struct RawDifftSide {
     line_number: usize,
+    #[serde(default)]
+    changes: Vec<RawDifftChange>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RawDifftChange {
+    start: usize,
+    end: usize,
 }
 
 async fn ensure_repo_available(pull: &PullRequestSummary) -> Result<PathBuf> {
@@ -184,19 +192,67 @@ async fn ensure_repo_available(pull: &PullRequestSummary) -> Result<PathBuf> {
 }
 
 async fn fetch_required_commits(repo_dir: &Path, base_sha: &str, head_sha: &str) -> Result<()> {
-    run_git(
-        &["fetch", "--prune", "origin", base_sha],
-        Some(repo_dir),
-        "fetch base commit",
-    )
-    .await?;
-    run_git(
-        &["fetch", "--prune", "origin", head_sha],
-        Some(repo_dir),
-        "fetch head commit",
-    )
-    .await?;
+    let mut missing = Vec::<String>::new();
+    if !commit_exists(repo_dir, base_sha).await? {
+        missing.push(base_sha.to_owned());
+    }
+    if base_sha != head_sha && !commit_exists(repo_dir, head_sha).await? {
+        missing.push(head_sha.to_owned());
+    }
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    let mut unique = HashSet::<String>::with_capacity(missing.len());
+    let refs = missing
+        .into_iter()
+        .filter(|sha| unique.insert(sha.clone()))
+        .collect::<Vec<_>>();
+    fetch_commits(repo_dir, &refs).await?;
     Ok(())
+}
+
+async fn commit_exists(repo_dir: &Path, sha: &str) -> Result<bool> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_dir)
+        .arg("cat-file")
+        .arg("-e")
+        .arg(format!("{sha}^{{commit}}"))
+        .output()
+        .await
+        .map_err(|source| PullRequestDiffError::GitIo {
+            context: "check commit presence",
+            source,
+        })?;
+
+    Ok(output.status.success())
+}
+
+async fn fetch_commits(repo_dir: &Path, refs: &[String]) -> Result<()> {
+    let mut command = Command::new("git");
+    command.arg("-C").arg(repo_dir).arg("fetch").arg("origin");
+    for reference in refs {
+        command.arg(reference);
+    }
+
+    let output = command
+        .output()
+        .await
+        .map_err(|source| PullRequestDiffError::GitIo {
+            context: "fetch required commits",
+            source,
+        })?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    Err(PullRequestDiffError::GitFailed {
+        context: "fetch required commits",
+        status: output.status.code().unwrap_or(-1),
+        stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+    })
 }
 
 async fn create_workspace(pull: &PullRequestSummary) -> Result<(PathBuf, PathBuf, PathBuf)> {
@@ -316,7 +372,10 @@ fn build_diff_file(
         .filter(|lines| !lines.is_empty())
         .unwrap_or_else(|| fallback_aligned_lines(&left_lines, &right_lines, status));
 
-    let (changed_left, changed_right) = parsed.as_ref().map(changed_line_sets).unwrap_or_default();
+    let (changed_left, changed_right, left_highlights, right_highlights) = parsed
+        .as_ref()
+        .map(changed_line_annotations)
+        .unwrap_or_default();
 
     let mut rows = Vec::with_capacity(aligned.len());
     for pair in &aligned {
@@ -337,6 +396,12 @@ fn build_diff_file(
             right_line_number: right_index.map(|value| value + 1),
             left_text,
             right_text,
+            left_highlights: left_index
+                .and_then(|index| left_highlights.get(&index).cloned())
+                .unwrap_or_default(),
+            right_highlights: right_index
+                .and_then(|index| right_highlights.get(&index).cloned())
+                .unwrap_or_default(),
             kind,
         });
     }
@@ -406,22 +471,94 @@ fn fallback_aligned_lines(
     }
 }
 
-fn changed_line_sets(entry: &RawDifftFile) -> (HashMap<usize, ()>, HashMap<usize, ()>) {
+type HighlightMap = HashMap<usize, Vec<PullRequestDiffHighlightRange>>;
+
+fn changed_line_annotations(
+    entry: &RawDifftFile,
+) -> (
+    HashMap<usize, ()>,
+    HashMap<usize, ()>,
+    HighlightMap,
+    HighlightMap,
+) {
     let mut left = HashMap::new();
     let mut right = HashMap::new();
+    let mut left_highlights = HashMap::<usize, Vec<PullRequestDiffHighlightRange>>::new();
+    let mut right_highlights = HashMap::<usize, Vec<PullRequestDiffHighlightRange>>::new();
 
     for chunk in &entry.chunks {
         for line in chunk {
             if let Some(lhs) = &line.lhs {
                 left.insert(lhs.line_number, ());
+                let ranges = lhs
+                    .changes
+                    .iter()
+                    .filter_map(normalize_change_range)
+                    .collect::<Vec<_>>();
+                if !ranges.is_empty() {
+                    left_highlights
+                        .entry(lhs.line_number)
+                        .or_default()
+                        .extend(ranges);
+                }
             }
             if let Some(rhs) = &line.rhs {
                 right.insert(rhs.line_number, ());
+                let ranges = rhs
+                    .changes
+                    .iter()
+                    .filter_map(normalize_change_range)
+                    .collect::<Vec<_>>();
+                if !ranges.is_empty() {
+                    right_highlights
+                        .entry(rhs.line_number)
+                        .or_default()
+                        .extend(ranges);
+                }
             }
         }
     }
 
-    (left, right)
+    normalize_highlight_map(&mut left_highlights);
+    normalize_highlight_map(&mut right_highlights);
+
+    (left, right, left_highlights, right_highlights)
+}
+
+fn normalize_change_range(change: &RawDifftChange) -> Option<PullRequestDiffHighlightRange> {
+    (change.start < change.end).then_some(PullRequestDiffHighlightRange {
+        start: change.start,
+        end: change.end,
+    })
+}
+
+fn normalize_highlight_map(map: &mut HighlightMap) {
+    for ranges in map.values_mut() {
+        *ranges = merge_highlight_ranges(ranges);
+    }
+}
+
+fn merge_highlight_ranges(
+    ranges: &[PullRequestDiffHighlightRange],
+) -> Vec<PullRequestDiffHighlightRange> {
+    if ranges.is_empty() {
+        return Vec::new();
+    }
+
+    let mut sorted = ranges.to_vec();
+    sorted.sort_unstable_by_key(|range| (range.start, range.end));
+
+    let mut merged: Vec<PullRequestDiffHighlightRange> = Vec::with_capacity(sorted.len());
+    for range in sorted {
+        match merged.last_mut() {
+            Some(last) if range.start <= last.end => {
+                last.end = last.end.max(range.end);
+            }
+            _ => merged.push(range),
+        }
+    }
+
+    merged
 }
 
 fn classify_row_kind(
@@ -573,8 +710,14 @@ mod tests {
             status: "changed".to_owned(),
             aligned_lines: vec![[Some(0), Some(0)], [Some(1), Some(1)], [Some(2), Some(2)]],
             chunks: vec![vec![RawDifftChunkLine {
-                lhs: Some(RawDifftSide { line_number: 1 }),
-                rhs: Some(RawDifftSide { line_number: 1 }),
+                lhs: Some(RawDifftSide {
+                    line_number: 1,
+                    changes: vec![RawDifftChange { start: 0, end: 1 }],
+                }),
+                rhs: Some(RawDifftSide {
+                    line_number: 1,
+                    changes: vec![RawDifftChange { start: 0, end: 1 }],
+                }),
             }]],
         };
 
@@ -583,5 +726,43 @@ mod tests {
         assert_eq!(file.hunk_starts, vec![1]);
         assert_eq!(file.rows.len(), 2);
         assert_eq!(file.rows[1].kind, PullRequestDiffRowKind::Modified);
+    }
+
+    #[test]
+    fn build_diff_file_attaches_merged_highlight_ranges() {
+        let source = SourcePair {
+            base: "let value = foo();\n".to_owned(),
+            head: "let value = bar();\n".to_owned(),
+        };
+        let parsed = RawDifftFile {
+            path: "example.rs".to_owned(),
+            status: "changed".to_owned(),
+            aligned_lines: vec![[Some(0), Some(0)], [Some(1), Some(1)]],
+            chunks: vec![vec![RawDifftChunkLine {
+                lhs: Some(RawDifftSide {
+                    line_number: 0,
+                    changes: vec![
+                        RawDifftChange { start: 12, end: 14 },
+                        RawDifftChange { start: 14, end: 15 },
+                    ],
+                }),
+                rhs: Some(RawDifftSide {
+                    line_number: 0,
+                    changes: vec![RawDifftChange { start: 12, end: 15 }],
+                }),
+            }]],
+        };
+
+        let file = build_diff_file("example.rs", &source, Some(parsed));
+        let row = &file.rows[0];
+
+        assert_eq!(
+            row.left_highlights,
+            vec![PullRequestDiffHighlightRange { start: 12, end: 15 }]
+        );
+        assert_eq!(
+            row.right_highlights,
+            vec![PullRequestDiffHighlightRange { start: 12, end: 15 }]
+        );
     }
 }

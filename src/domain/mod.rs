@@ -141,6 +141,8 @@ pub struct PullRequestDiffRow {
     pub right_line_number: Option<usize>,
     pub left_text: String,
     pub right_text: String,
+    pub left_highlights: Vec<PullRequestDiffHighlightRange>,
+    pub right_highlights: Vec<PullRequestDiffHighlightRange>,
     pub kind: PullRequestDiffRowKind,
 }
 
@@ -151,6 +153,13 @@ pub enum PullRequestDiffRowKind {
     Added,
     Removed,
     Modified,
+}
+
+/// A highlighted character range (start inclusive, end exclusive) inside a diff row side.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct PullRequestDiffHighlightRange {
+    pub start: usize,
+    pub end: usize,
 }
 
 /// The current application route.

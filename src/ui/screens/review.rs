@@ -1,7 +1,10 @@
 //! Review screen renderer with tabs for threads and diffs.
 
 use crate::app::state::{AppState, ReviewScreenState, ReviewTab};
-use crate::domain::{CommentRef, ListNodeKind, PullRequestDiffFileStatus, PullRequestDiffRowKind};
+use crate::domain::{
+    CommentRef, ListNodeKind, PullRequestDiffFileStatus, PullRequestDiffHighlightRange,
+    PullRequestDiffRowKind,
+};
 use crate::render::markdown::MarkdownRenderer;
 use crate::render::thread::{
     render_issue_preview, render_review_summary_preview, render_thread_preview,
@@ -432,6 +435,7 @@ fn render_diff_rows(file: &crate::domain::PullRequestDiffFile, width: u16) -> Ve
                 row.left_line_number,
                 &row.left_text,
                 left_width,
+                &row.left_highlights,
                 row.kind,
                 true,
             ));
@@ -440,6 +444,7 @@ fn render_diff_rows(file: &crate::domain::PullRequestDiffFile, width: u16) -> Ve
                 row.right_line_number,
                 &row.right_text,
                 right_width,
+                &row.right_highlights,
                 row.kind,
                 false,
             ));
@@ -452,6 +457,7 @@ fn render_diff_side(
     line_number: Option<usize>,
     text: &str,
     width: usize,
+    highlights: &[PullRequestDiffHighlightRange],
     kind: PullRequestDiffRowKind,
     is_left: bool,
 ) -> Vec<Span<'static>> {
@@ -465,29 +471,40 @@ fn render_diff_side(
         .map(|value| format!("{value:>5} "))
         .unwrap_or_else(|| " ".repeat(number_width));
 
-    let mut content: String = text.chars().take(text_width).collect();
-    let content_width = content.chars().count();
-    if content_width < text_width {
-        content.push_str(&" ".repeat(text_width - content_width));
-    }
-
-    let (fg, bg) = match kind {
-        PullRequestDiffRowKind::Context => (theme::text().fg.unwrap_or(Color::White), None),
+    let visible_chars = text.chars().take(text_width).collect::<Vec<_>>();
+    let visible_len = visible_chars.len();
+    let base_fg = theme::text().fg.unwrap_or(Color::White);
+    let (content_fg, content_bg, highlight_fg, highlight_bg) = match kind {
+        PullRequestDiffRowKind::Context => (base_fg, None, base_fg, None),
         PullRequestDiffRowKind::Added => {
             if is_left {
                 (
                     theme::dim().fg.unwrap_or(Color::DarkGray),
                     Some(Color::Rgb(24, 24, 24)),
+                    theme::dim().fg.unwrap_or(Color::DarkGray),
+                    Some(Color::Rgb(24, 24, 24)),
                 )
             } else {
-                (Color::Rgb(172, 218, 170), Some(Color::Rgb(23, 42, 26)))
+                (
+                    Color::Rgb(172, 218, 170),
+                    Some(Color::Rgb(23, 42, 26)),
+                    Color::Rgb(172, 218, 170),
+                    Some(Color::Rgb(23, 42, 26)),
+                )
             }
         }
         PullRequestDiffRowKind::Removed => {
             if is_left {
-                (Color::Rgb(229, 161, 161), Some(Color::Rgb(52, 23, 25)))
+                (
+                    Color::Rgb(229, 161, 161),
+                    Some(Color::Rgb(52, 23, 25)),
+                    Color::Rgb(229, 161, 161),
+                    Some(Color::Rgb(52, 23, 25)),
+                )
             } else {
                 (
+                    theme::dim().fg.unwrap_or(Color::DarkGray),
+                    Some(Color::Rgb(24, 24, 24)),
                     theme::dim().fg.unwrap_or(Color::DarkGray),
                     Some(Color::Rgb(24, 24, 24)),
                 )
@@ -495,22 +512,178 @@ fn render_diff_side(
         }
         PullRequestDiffRowKind::Modified => {
             if is_left {
-                (Color::Rgb(236, 193, 170), Some(Color::Rgb(58, 43, 35)))
+                (
+                    base_fg,
+                    Some(Color::Rgb(24, 24, 24)),
+                    Color::Rgb(236, 193, 170),
+                    Some(Color::Rgb(58, 43, 35)),
+                )
             } else {
-                (Color::Rgb(194, 220, 194), Some(Color::Rgb(34, 48, 34)))
+                (
+                    base_fg,
+                    Some(Color::Rgb(24, 24, 24)),
+                    Color::Rgb(194, 220, 194),
+                    Some(Color::Rgb(34, 48, 34)),
+                )
             }
         }
     };
 
     let number_style = Style::default()
         .fg(theme::dim().fg.unwrap_or(Color::DarkGray))
-        .bg(bg.unwrap_or(Color::Reset));
-    let content_style = Style::default().fg(fg).bg(bg.unwrap_or(Color::Reset));
+        .bg(content_bg.unwrap_or(Color::Reset));
+    let content_style = Style::default()
+        .fg(content_fg)
+        .bg(content_bg.unwrap_or(Color::Reset));
+    let highlight_style = Style::default()
+        .fg(highlight_fg)
+        .bg(highlight_bg.unwrap_or(Color::Reset));
 
-    vec![
-        Span::styled(number, number_style),
-        Span::styled(content, content_style),
-    ]
+    let mut spans = vec![Span::styled(number, number_style)];
+    let line_highlights = clip_and_merge_ranges(highlights, visible_len);
+    let should_use_partial = kind == PullRequestDiffRowKind::Modified
+        && !line_highlights.is_empty()
+        && !ranges_cover_visible_content(&line_highlights, visible_len);
+
+    if text_width == 0 {
+        return spans;
+    }
+
+    if text.trim().is_empty() {
+        let filler_style = if kind == PullRequestDiffRowKind::Context {
+            content_style
+        } else {
+            Style::default()
+                .fg(Color::Rgb(57, 72, 114))
+                .bg(content_bg.unwrap_or(Color::Reset))
+        };
+        let filler = if kind == PullRequestDiffRowKind::Context {
+            " ".repeat(text_width)
+        } else {
+            hatched_filler(text_width)
+        };
+        spans.push(Span::styled(filler, filler_style));
+        return spans;
+    }
+
+    if should_use_partial {
+        let mut cursor = 0usize;
+        for range in line_highlights {
+            if range.start > cursor {
+                spans.push(Span::styled(
+                    chars_to_string(&visible_chars, cursor, range.start),
+                    content_style,
+                ));
+            }
+            spans.push(Span::styled(
+                chars_to_string(&visible_chars, range.start, range.end),
+                highlight_style,
+            ));
+            cursor = range.end;
+        }
+        if cursor < visible_len {
+            spans.push(Span::styled(
+                chars_to_string(&visible_chars, cursor, visible_len),
+                content_style,
+            ));
+        }
+        if visible_len < text_width {
+            spans.push(Span::styled(
+                " ".repeat(text_width - visible_len),
+                content_style,
+            ));
+        }
+        return spans;
+    }
+
+    let mut content: String = visible_chars.iter().collect();
+    if visible_len < text_width {
+        content.push_str(&" ".repeat(text_width - visible_len));
+    }
+    let fill_style = if kind == PullRequestDiffRowKind::Modified {
+        highlight_style
+    } else {
+        content_style
+    };
+    spans.push(Span::styled(content, fill_style));
+    spans
+}
+
+fn clip_and_merge_ranges(
+    ranges: &[PullRequestDiffHighlightRange],
+    visible_len: usize,
+) -> Vec<PullRequestDiffHighlightRange> {
+    if ranges.is_empty() || visible_len == 0 {
+        return Vec::new();
+    }
+
+    let mut clipped = ranges
+        .iter()
+        .filter_map(|range| {
+            let start = range.start.min(visible_len);
+            let end = range.end.min(visible_len);
+            (start < end).then_some(PullRequestDiffHighlightRange { start, end })
+        })
+        .collect::<Vec<_>>();
+
+    if clipped.is_empty() {
+        return clipped;
+    }
+
+    clipped.sort_unstable_by_key(|range| (range.start, range.end));
+    let mut merged: Vec<PullRequestDiffHighlightRange> = Vec::with_capacity(clipped.len());
+    for range in clipped {
+        match merged.last_mut() {
+            Some(last) if range.start <= last.end => {
+                last.end = last.end.max(range.end);
+            }
+            _ => merged.push(range),
+        }
+    }
+
+    merged
+}
+
+fn ranges_cover_visible_content(
+    ranges: &[PullRequestDiffHighlightRange],
+    visible_len: usize,
+) -> bool {
+    if visible_len == 0 {
+        return false;
+    }
+
+    let mut covered_until = 0usize;
+    for range in ranges {
+        if range.start > covered_until {
+            return false;
+        }
+        covered_until = covered_until.max(range.end);
+        if covered_until >= visible_len {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn chars_to_string(chars: &[char], start: usize, end: usize) -> String {
+    chars
+        .iter()
+        .skip(start)
+        .take(end.saturating_sub(start))
+        .collect()
+}
+
+fn hatched_filler(width: usize) -> String {
+    let mut filler = String::with_capacity(width);
+    for index in 0..width {
+        if index % 2 == 0 {
+            filler.push('╱');
+        } else {
+            filler.push('╲');
+        }
+    }
+    filler
 }
 
 fn wrapped_content_height(lines: &[Line<'_>], width: u16) -> usize {

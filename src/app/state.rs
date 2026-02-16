@@ -524,6 +524,14 @@ impl ReviewScreenState {
         self.rebuild_nodes();
     }
 
+    pub fn clear_diff(&mut self) {
+        self.diff = None;
+        self.diff_error = None;
+        self.selected_diff_file = 0;
+        self.diff_scroll = 0;
+        self.selected_hunk = 0;
+    }
+
     pub fn set_diff(&mut self, diff: PullRequestDiffData) {
         self.diff = Some(diff);
         self.diff_error = None;
