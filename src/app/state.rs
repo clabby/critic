@@ -204,16 +204,23 @@ pub struct ReviewScreenState {
     pub right_scroll: u16,
     pub diff: Option<PullRequestDiffData>,
     pub diff_error: Option<String>,
+    pub diff_focus: DiffFocus,
     pub selected_diff_row: usize,
     pub selected_diff_file: usize,
+    pub selected_diff_line: usize,
+    pub diff_selection_anchor: Option<usize>,
     pub diff_scroll: u16,
+    pending_preview_scroll: u16,
+    pending_preview_comment_id: Option<u64>,
     pub selected_hunk: usize,
     pub diff_viewport_height: u16,
     pub diff_search_focused: bool,
     pub diff_search_query: String,
     pub diff_tree_rows_cache: Vec<DiffTreeRow>,
+    pub pending_review_comments: Vec<PendingReviewCommentDraft>,
     pub nodes: Vec<ListNode>,
     pub reply_drafts: HashMap<String, String>,
+    next_pending_review_comment_id: u64,
     collapsed: HashSet<String>,
     diff_collapsed_dirs: HashSet<String>,
     threads_by_key: HashMap<String, ReviewThread>,
@@ -221,6 +228,12 @@ pub struct ReviewScreenState {
 
 impl ReviewScreenState {
     pub fn new(pull: PullRequestSummary, data: PullRequestData) -> Self {
+        let mut pull = pull;
+        pull.head_ref = data.head_ref.clone();
+        pull.base_ref = data.base_ref.clone();
+        pull.head_sha = data.head_sha.clone();
+        pull.base_sha = data.base_sha.clone();
+
         let mut state = Self {
             pull,
             data,
@@ -230,16 +243,23 @@ impl ReviewScreenState {
             right_scroll: 0,
             diff: None,
             diff_error: None,
+            diff_focus: DiffFocus::Files,
             selected_diff_row: 0,
             selected_diff_file: 0,
+            selected_diff_line: 0,
+            diff_selection_anchor: None,
             diff_scroll: 0,
+            pending_preview_scroll: 0,
+            pending_preview_comment_id: None,
             selected_hunk: 0,
             diff_viewport_height: 0,
             diff_search_focused: false,
             diff_search_query: String::new(),
             diff_tree_rows_cache: Vec::new(),
+            pending_review_comments: Vec::new(),
             nodes: Vec::new(),
             reply_drafts: HashMap::new(),
+            next_pending_review_comment_id: 1,
             collapsed: HashSet::new(),
             diff_collapsed_dirs: HashSet::new(),
             threads_by_key: HashMap::new(),
@@ -447,23 +467,27 @@ impl ReviewScreenState {
                 self.right_scroll = 0;
             }
             ReviewTab::Diff => {
-                let Some((next_row, next_file)) = ({
-                    let rows = self.diff_tree_rows();
-                    if rows.is_empty() {
-                        None
-                    } else {
-                        let row = (self.selected_diff_row + 1).min(rows.len() - 1);
-                        Some((row, rows.get(row).and_then(|value| value.file_index)))
-                    }
-                }) else {
-                    self.selected_diff_row = 0;
-                    self.selected_diff_file = 0;
-                    return;
-                };
+                if self.diff_focus == DiffFocus::Content {
+                    self.move_selected_diff_line_down();
+                } else {
+                    let Some((next_row, next_file)) = ({
+                        let rows = self.diff_tree_rows();
+                        if rows.is_empty() {
+                            None
+                        } else {
+                            let row = (self.selected_diff_row + 1).min(rows.len() - 1);
+                            Some((row, rows.get(row).and_then(|value| value.file_index)))
+                        }
+                    }) else {
+                        self.selected_diff_row = 0;
+                        self.selected_diff_file = 0;
+                        return;
+                    };
 
-                self.selected_diff_row = next_row;
-                if let Some(file_index) = next_file {
-                    self.set_selected_diff_file(file_index);
+                    self.selected_diff_row = next_row;
+                    if let Some(file_index) = next_file {
+                        self.set_selected_diff_file(file_index);
+                    }
                 }
             }
         }
@@ -481,23 +505,27 @@ impl ReviewScreenState {
                 self.right_scroll = 0;
             }
             ReviewTab::Diff => {
-                let Some((next_row, next_file)) = ({
-                    let rows = self.diff_tree_rows();
-                    if rows.is_empty() {
-                        None
-                    } else {
-                        let row = self.selected_diff_row.saturating_sub(1);
-                        Some((row, rows.get(row).and_then(|value| value.file_index)))
-                    }
-                }) else {
-                    self.selected_diff_row = 0;
-                    self.selected_diff_file = 0;
-                    return;
-                };
+                if self.diff_focus == DiffFocus::Content {
+                    self.move_selected_diff_line_up();
+                } else {
+                    let Some((next_row, next_file)) = ({
+                        let rows = self.diff_tree_rows();
+                        if rows.is_empty() {
+                            None
+                        } else {
+                            let row = self.selected_diff_row.saturating_sub(1);
+                            Some((row, rows.get(row).and_then(|value| value.file_index)))
+                        }
+                    }) else {
+                        self.selected_diff_row = 0;
+                        self.selected_diff_file = 0;
+                        return;
+                    };
 
-                self.selected_diff_row = next_row;
-                if let Some(file_index) = next_file {
-                    self.set_selected_diff_file(file_index);
+                    self.selected_diff_row = next_row;
+                    if let Some(file_index) = next_file {
+                        self.set_selected_diff_file(file_index);
+                    }
                 }
             }
         }
@@ -509,7 +537,12 @@ impl ReviewScreenState {
                 self.right_scroll = self.right_scroll.saturating_add(1);
             }
             ReviewTab::Diff => {
-                self.diff_scroll = self.diff_scroll.saturating_add(1);
+                self.sync_pending_review_preview_target();
+                if self.pending_preview_comment_id.is_some() {
+                    self.pending_preview_scroll = self.pending_preview_scroll.saturating_add(1);
+                } else {
+                    self.diff_scroll = self.diff_scroll.saturating_add(1);
+                }
             }
         }
     }
@@ -520,7 +553,12 @@ impl ReviewScreenState {
                 self.right_scroll = self.right_scroll.saturating_sub(1);
             }
             ReviewTab::Diff => {
-                self.diff_scroll = self.diff_scroll.saturating_sub(1);
+                self.sync_pending_review_preview_target();
+                if self.pending_preview_comment_id.is_some() {
+                    self.pending_preview_scroll = self.pending_preview_scroll.saturating_sub(1);
+                } else {
+                    self.diff_scroll = self.diff_scroll.saturating_sub(1);
+                }
             }
         }
     }
@@ -551,17 +589,29 @@ impl ReviewScreenState {
         self.rebuild_nodes();
     }
 
-    pub fn set_data(&mut self, data: PullRequestData) {
+    pub fn set_data(&mut self, data: PullRequestData) -> bool {
+        let head_changed = self.pull.head_sha != data.head_sha;
+
+        self.pull.head_ref = data.head_ref.clone();
+        self.pull.base_ref = data.base_ref.clone();
+        self.pull.head_sha = data.head_sha.clone();
+        self.pull.base_sha = data.base_sha.clone();
         self.data = data;
         self.rebuild_nodes();
+        head_changed
     }
 
     pub fn clear_diff(&mut self) {
         self.diff = None;
         self.diff_error = None;
+        self.diff_focus = DiffFocus::Files;
         self.selected_diff_row = 0;
         self.selected_diff_file = 0;
+        self.selected_diff_line = 0;
+        self.diff_selection_anchor = None;
         self.diff_scroll = 0;
+        self.pending_preview_scroll = 0;
+        self.pending_preview_comment_id = None;
         self.selected_hunk = 0;
         self.diff_viewport_height = 0;
         self.diff_collapsed_dirs.clear();
@@ -572,9 +622,14 @@ impl ReviewScreenState {
     pub fn set_diff(&mut self, diff: PullRequestDiffData) {
         self.diff = Some(diff);
         self.diff_error = None;
+        self.diff_focus = DiffFocus::Files;
         self.selected_diff_file = 0;
         self.selected_diff_row = 0;
+        self.selected_diff_line = 0;
+        self.diff_selection_anchor = None;
         self.diff_scroll = 0;
+        self.pending_preview_scroll = 0;
+        self.pending_preview_comment_id = None;
         self.selected_hunk = 0;
         self.diff_viewport_height = 0;
         self.diff_collapsed_dirs.clear();
@@ -586,9 +641,14 @@ impl ReviewScreenState {
     pub fn set_diff_error(&mut self, error: String) {
         self.diff = None;
         self.diff_error = Some(error);
+        self.diff_focus = DiffFocus::Files;
         self.selected_diff_row = 0;
         self.selected_diff_file = 0;
+        self.selected_diff_line = 0;
+        self.diff_selection_anchor = None;
         self.diff_scroll = 0;
+        self.pending_preview_scroll = 0;
+        self.pending_preview_comment_id = None;
         self.selected_hunk = 0;
         self.diff_viewport_height = 0;
         self.diff_collapsed_dirs.clear();
@@ -694,6 +754,18 @@ impl ReviewScreenState {
         self.diff_search_focused
     }
 
+    pub fn focus_diff_files(&mut self) {
+        self.diff_focus = DiffFocus::Files;
+    }
+
+    pub fn focus_diff_content(&mut self) {
+        self.diff_focus = DiffFocus::Content;
+    }
+
+    pub fn is_diff_content_focused(&self) -> bool {
+        self.diff_focus == DiffFocus::Content
+    }
+
     pub fn diff_search_query(&self) -> &str {
         &self.diff_search_query
     }
@@ -720,7 +792,7 @@ impl ReviewScreenState {
         }
 
         let current_file = self.selected_diff_file;
-        let current = usize::from(self.diff_scroll);
+        let current = self.selected_diff_line;
         let Some(current_pos) = files.iter().position(|index| *index == current_file) else {
             return;
         };
@@ -769,7 +841,7 @@ impl ReviewScreenState {
         }
 
         let current_file = self.selected_diff_file;
-        let current = usize::from(self.diff_scroll);
+        let current = self.selected_diff_line;
         let Some(current_pos) = files.iter().position(|index| *index == current_file) else {
             return;
         };
@@ -811,8 +883,525 @@ impl ReviewScreenState {
         }
     }
 
+    pub fn jump_next_pending_review_comment(&mut self) -> bool {
+        let locations = self.pending_comment_locations();
+        if locations.is_empty() {
+            return false;
+        }
+
+        let current = (self.selected_diff_file, self.selected_diff_line);
+        let target = locations
+            .iter()
+            .copied()
+            .find(|location| (location.file_index, location.row_index) > current)
+            .unwrap_or(locations[0]);
+        self.jump_to_pending_comment_location(target);
+        true
+    }
+
+    pub fn jump_prev_pending_review_comment(&mut self) -> bool {
+        let locations = self.pending_comment_locations();
+        if locations.is_empty() {
+            return false;
+        }
+
+        let current = (self.selected_diff_file, self.selected_diff_line);
+        let target = locations
+            .iter()
+            .rev()
+            .copied()
+            .find(|location| (location.file_index, location.row_index) < current)
+            .unwrap_or(*locations.last().expect("locations is not empty"));
+        self.jump_to_pending_comment_location(target);
+        true
+    }
+
     pub fn is_collapsed(&self, key: &str) -> bool {
         self.collapsed.contains(key)
+    }
+
+    pub fn selected_diff_line(&self) -> usize {
+        self.selected_diff_line
+    }
+
+    pub fn selected_diff_range(&self) -> Option<(usize, usize)> {
+        let anchor = self.diff_selection_anchor?;
+        let start = anchor.min(self.selected_diff_line);
+        let end = anchor.max(self.selected_diff_line);
+        Some((start, end))
+    }
+
+    pub fn toggle_diff_selection_anchor(&mut self) {
+        self.diff_selection_anchor = match self.diff_selection_anchor {
+            Some(_) => None,
+            None => {
+                let Some(file) = self.selected_diff_file() else {
+                    return;
+                };
+                self.selected_diff_comment_side().and_then(|side| {
+                    if self.row_overlaps_pending_comment(self.selected_diff_line, side) {
+                        return None;
+                    }
+
+                    hunk_index_for_row(file, self.selected_diff_line)
+                        .map(|_| self.selected_diff_line)
+                })
+            }
+        };
+    }
+
+    pub fn clear_diff_selection_anchor(&mut self) {
+        self.diff_selection_anchor = None;
+    }
+
+    pub fn has_diff_selection_anchor(&self) -> bool {
+        self.diff_selection_anchor.is_some()
+    }
+
+    pub fn pending_review_comment_count(&self) -> usize {
+        self.pending_review_comments.len()
+    }
+
+    pub fn pending_review_comments(&self) -> &[PendingReviewCommentDraft] {
+        &self.pending_review_comments
+    }
+
+    pub fn clear_pending_review_comments(&mut self) {
+        self.pending_review_comments.clear();
+        self.next_pending_review_comment_id = 1;
+        self.diff_selection_anchor = None;
+    }
+
+    pub fn apply_restored_drafts(
+        &mut self,
+        mut pending: Vec<PendingReviewCommentDraft>,
+        mut reply_drafts: HashMap<String, String>,
+    ) -> (usize, usize) {
+        pending.retain(|comment| !comment.body.trim().is_empty());
+        let changed_files = self
+            .data
+            .changed_files
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        pending.retain(|comment| changed_files.contains(comment.path.as_str()));
+
+        let valid_roots = self
+            .data
+            .comments
+            .iter()
+            .filter_map(|entry| match entry {
+                PullRequestComment::ReviewThread(thread) => Some(thread_key(thread)),
+                _ => None,
+            })
+            .collect::<HashSet<_>>();
+        reply_drafts.retain(|root, body| valid_roots.contains(root) && !body.trim().is_empty());
+
+        self.next_pending_review_comment_id = pending
+            .iter()
+            .map(|comment| comment.id)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        self.pending_review_comments = pending;
+        self.reply_drafts = reply_drafts;
+
+        (
+            self.pending_review_comments.len(),
+            self.reply_drafts
+                .values()
+                .filter(|body| !body.is_empty())
+                .count(),
+        )
+    }
+
+    pub fn pending_review_comment_is_outdated(&self, comment: &PendingReviewCommentDraft) -> bool {
+        let Some(diff) = self.diff.as_ref() else {
+            return false;
+        };
+        !pending_comment_matches_current_diff(diff, comment)
+    }
+
+    pub fn pending_review_comments_for_row(
+        &self,
+        file: &PullRequestDiffFile,
+        row_index: usize,
+    ) -> Vec<&PendingReviewCommentDraft> {
+        self.pending_review_comments
+            .iter()
+            .filter(|comment| comment.path == file.path)
+            .filter(|comment| {
+                let Some(line) = row_line_for_side(&file.rows[row_index], comment.side) else {
+                    return false;
+                };
+                let line = line as u64;
+                let start = comment.start_line.unwrap_or(comment.line).min(comment.line);
+                let end = comment.start_line.unwrap_or(comment.line).max(comment.line);
+                line >= start && line <= end
+            })
+            .collect()
+    }
+
+    pub fn pending_review_comments_for_file(
+        &self,
+        file: &PullRequestDiffFile,
+    ) -> Vec<&PendingReviewCommentDraft> {
+        self.pending_review_comments
+            .iter()
+            .filter(|comment| comment.path == file.path)
+            .collect()
+    }
+
+    pub fn selected_pending_review_comment(&self) -> Option<&PendingReviewCommentDraft> {
+        let file = self.selected_diff_file()?;
+        let row = file.rows.get(self.selected_diff_line)?;
+        self.pending_review_comments.iter().find(|comment| {
+            if comment.path != file.path {
+                return false;
+            }
+            let Some(line) = row_line_for_side(row, comment.side) else {
+                return false;
+            };
+            let line = line as u64;
+            let start = comment.start_line.unwrap_or(comment.line).min(comment.line);
+            let end = comment.start_line.unwrap_or(comment.line).max(comment.line);
+            line >= start && line <= end
+        })
+    }
+
+    pub fn sync_pending_review_preview_target(&mut self) {
+        let hovered_comment_id = self
+            .selected_pending_review_comment()
+            .map(|comment| comment.id);
+        if hovered_comment_id != self.pending_preview_comment_id {
+            self.pending_preview_comment_id = hovered_comment_id;
+            self.pending_preview_scroll = 0;
+        }
+    }
+
+    pub fn clamp_pending_preview_scroll(&mut self, max_scroll: usize) -> usize {
+        self.sync_pending_review_preview_target();
+        let scroll = usize::from(self.pending_preview_scroll).min(max_scroll);
+        self.pending_preview_scroll = u16::try_from(scroll).unwrap_or(u16::MAX);
+        scroll
+    }
+
+    pub fn remove_selected_pending_review_comment(&mut self) -> bool {
+        let Some(comment_id) = self
+            .selected_pending_review_comment()
+            .map(|comment| comment.id)
+        else {
+            return false;
+        };
+
+        if let Some(index) = self
+            .pending_review_comments
+            .iter()
+            .position(|comment| comment.id == comment_id)
+        {
+            self.pending_review_comments.remove(index);
+            self.diff_selection_anchor = None;
+            return true;
+        }
+
+        false
+    }
+
+    pub fn upsert_pending_review_comment_from_selection(
+        &mut self,
+        body: String,
+    ) -> Result<(), &'static str> {
+        let body = body.trim().to_owned();
+        if body.is_empty() {
+            return Err("comment is empty");
+        }
+
+        let Some(file) = self.selected_diff_file() else {
+            return Err("no diff file selected");
+        };
+        let Some(side) = self.selected_diff_comment_side() else {
+            return Err("selected line is outside changed diff lines");
+        };
+        if !self.selection_is_commentable_for_side(side) {
+            return Err("selection must stay within changed lines in a single hunk");
+        };
+
+        // When the cursor is inside an existing pending comment range, [e] should
+        // edit that comment even without selecting the full original range.
+        if let Some(existing_id) = self
+            .selected_pending_review_comment()
+            .map(|comment| comment.id)
+            && let Some(existing_index) = self
+                .pending_review_comments
+                .iter()
+                .position(|comment| comment.id == existing_id)
+        {
+            self.pending_review_comments[existing_index].body = body;
+            self.diff_selection_anchor = None;
+            return Ok(());
+        }
+
+        let Some((line, start_line)) = self.selected_diff_comment_lines(side) else {
+            return Err("selected range has no commentable lines");
+        };
+        let path = file.path.clone();
+
+        if let Some(existing_index) = self.pending_review_comments.iter().position(|comment| {
+            comment.path == path
+                && comment.side == side
+                && comment.line == line
+                && comment.start_line == start_line
+        }) {
+            self.pending_review_comments[existing_index].body = body;
+        } else if self.pending_range_overlaps_existing_comment(&path, side, line, start_line) {
+            return Err("selection overlaps an existing pending comment");
+        } else {
+            self.pending_review_comments
+                .push(PendingReviewCommentDraft {
+                    id: self.next_pending_review_comment_id,
+                    path,
+                    side,
+                    line,
+                    start_line,
+                    body,
+                });
+            self.next_pending_review_comment_id =
+                self.next_pending_review_comment_id.saturating_add(1);
+        }
+
+        self.diff_selection_anchor = None;
+        Ok(())
+    }
+
+    fn selected_diff_comment_side(&self) -> Option<PendingReviewCommentSide> {
+        let file = self.selected_diff_file()?;
+        let row = file.rows.get(self.selected_diff_line)?;
+        if row.kind == crate::domain::PullRequestDiffRowKind::Context {
+            return None;
+        }
+
+        if row.right_line_number.is_some() {
+            Some(PendingReviewCommentSide::Right)
+        } else if row.left_line_number.is_some() {
+            Some(PendingReviewCommentSide::Left)
+        } else {
+            None
+        }
+    }
+
+    fn selected_diff_comment_lines(
+        &self,
+        side: PendingReviewCommentSide,
+    ) -> Option<(u64, Option<u64>)> {
+        let file = self.selected_diff_file()?;
+        if file.rows.is_empty() {
+            return None;
+        }
+
+        let (start_row, end_row) = self
+            .selected_diff_range()
+            .unwrap_or((self.selected_diff_line, self.selected_diff_line));
+        let start_row = start_row.min(file.rows.len().saturating_sub(1));
+        let end_row = end_row.min(file.rows.len().saturating_sub(1));
+
+        let mut lines = Vec::new();
+        for row in file.rows.iter().take(end_row + 1).skip(start_row) {
+            if let Some(line) = row_line_for_side(row, side) {
+                lines.push(line as u64);
+            }
+        }
+        if lines.is_empty() {
+            return None;
+        }
+
+        lines.sort_unstable();
+        let start = *lines.first()?;
+        let end = *lines.last()?;
+        let start_line = (start != end).then_some(start);
+        Some((end, start_line))
+    }
+
+    fn row_overlaps_pending_comment(
+        &self,
+        row_index: usize,
+        side: PendingReviewCommentSide,
+    ) -> bool {
+        let Some(file) = self.selected_diff_file() else {
+            return false;
+        };
+        let Some(row) = file.rows.get(row_index) else {
+            return false;
+        };
+        let Some(line) = row_line_for_side(row, side).map(|value| value as u64) else {
+            return false;
+        };
+
+        self.pending_review_comments.iter().any(|comment| {
+            if comment.path != file.path || comment.side != side {
+                return false;
+            }
+            let (start, end) = pending_comment_bounds(comment.line, comment.start_line);
+            line >= start && line <= end
+        })
+    }
+
+    fn pending_range_overlaps_existing_comment(
+        &self,
+        path: &str,
+        side: PendingReviewCommentSide,
+        line: u64,
+        start_line: Option<u64>,
+    ) -> bool {
+        let (selected_start, selected_end) = pending_comment_bounds(line, start_line);
+        self.pending_review_comments.iter().any(|comment| {
+            if comment.path != path || comment.side != side {
+                return false;
+            }
+            let (existing_start, existing_end) =
+                pending_comment_bounds(comment.line, comment.start_line);
+            selected_start <= existing_end && existing_start <= selected_end
+        })
+    }
+
+    fn move_selected_diff_line_down(&mut self) {
+        let Some(file) = self.selected_diff_file() else {
+            self.selected_diff_line = 0;
+            self.diff_scroll = 0;
+            return;
+        };
+        if file.rows.is_empty() {
+            self.selected_diff_line = 0;
+            self.diff_scroll = 0;
+            return;
+        }
+
+        let max_index = file.rows.len().saturating_sub(1);
+        let mut next = (self.selected_diff_line + 1).min(max_index);
+        if self.diff_selection_anchor.is_some()
+            && let Some(side) = self.selected_diff_comment_side()
+        {
+            let anchor = self
+                .diff_selection_anchor
+                .unwrap_or(self.selected_diff_line);
+            let anchor_hunk = hunk_index_for_row(file, anchor);
+            if let Some(row) =
+                next_commentable_row(&file.rows, self.selected_diff_line, side, Direction::Down)
+            {
+                if hunk_index_for_row(file, row) == anchor_hunk {
+                    if self.row_overlaps_pending_comment(row, side) {
+                        next = self.selected_diff_line;
+                    } else {
+                        next = row;
+                    }
+                } else {
+                    next = self.selected_diff_line;
+                }
+            } else {
+                next = self.selected_diff_line;
+            }
+        }
+        self.selected_diff_line = next;
+        self.keep_selected_line_visible();
+    }
+
+    fn move_selected_diff_line_up(&mut self) {
+        let mut next = self.selected_diff_line.saturating_sub(1);
+        if self.diff_selection_anchor.is_some()
+            && let Some(file) = self.selected_diff_file()
+            && let Some(side) = self.selected_diff_comment_side()
+        {
+            let anchor = self
+                .diff_selection_anchor
+                .unwrap_or(self.selected_diff_line);
+            let anchor_hunk = hunk_index_for_row(file, anchor);
+            if let Some(row) =
+                next_commentable_row(&file.rows, self.selected_diff_line, side, Direction::Up)
+            {
+                if hunk_index_for_row(file, row) == anchor_hunk {
+                    if self.row_overlaps_pending_comment(row, side) {
+                        next = self.selected_diff_line;
+                    } else {
+                        next = row;
+                    }
+                } else {
+                    next = self.selected_diff_line;
+                }
+            } else {
+                next = self.selected_diff_line;
+            }
+        }
+        self.selected_diff_line = next;
+        self.keep_selected_line_visible();
+    }
+
+    pub fn fast_scroll_down(&mut self) {
+        if self.active_tab != ReviewTab::Diff {
+            return;
+        }
+        if self.diff_focus == DiffFocus::Content {
+            let steps = (usize::from(self.diff_viewport_height.max(2)) / 2).max(1);
+            for _ in 0..steps {
+                self.move_selected_diff_line_down();
+            }
+        } else {
+            for _ in 0..10 {
+                self.move_down();
+            }
+        }
+    }
+
+    pub fn fast_scroll_up(&mut self) {
+        if self.active_tab != ReviewTab::Diff {
+            return;
+        }
+        if self.diff_focus == DiffFocus::Content {
+            let steps = (usize::from(self.diff_viewport_height.max(2)) / 2).max(1);
+            for _ in 0..steps {
+                self.move_selected_diff_line_up();
+            }
+        } else {
+            for _ in 0..10 {
+                self.move_up();
+            }
+        }
+    }
+
+    fn selection_is_commentable_for_side(&self, side: PendingReviewCommentSide) -> bool {
+        let Some(file) = self.selected_diff_file() else {
+            return false;
+        };
+        if file.rows.is_empty() {
+            return false;
+        }
+
+        let (start_row, end_row) = self
+            .selected_diff_range()
+            .unwrap_or((self.selected_diff_line, self.selected_diff_line));
+        let start_row = start_row.min(file.rows.len().saturating_sub(1));
+        let end_row = end_row.min(file.rows.len().saturating_sub(1));
+
+        file.rows
+            .iter()
+            .take(end_row + 1)
+            .skip(start_row)
+            .all(|row| is_commentable_diff_row(row, side))
+    }
+
+    fn keep_selected_line_visible(&mut self) {
+        let viewport = usize::from(self.diff_viewport_height.max(1));
+        let current_scroll = usize::from(self.diff_scroll);
+        if self.selected_diff_line < current_scroll {
+            self.diff_scroll = u16::try_from(self.selected_diff_line).unwrap_or(u16::MAX);
+            return;
+        }
+
+        let lower_bound = current_scroll.saturating_add(viewport.saturating_sub(1));
+        if self.selected_diff_line > lower_bound {
+            let target_scroll = self
+                .selected_diff_line
+                .saturating_sub(viewport.saturating_sub(1));
+            self.diff_scroll = u16::try_from(target_scroll).unwrap_or(u16::MAX);
+        }
     }
 
     pub fn set_diff_viewport_height(&mut self, height: u16) {
@@ -827,6 +1416,8 @@ impl ReviewScreenState {
         self.selected_diff_file = file_index;
         self.diff_scroll = self.first_hunk_scroll(file_index);
         self.selected_hunk = 0;
+        self.selected_diff_line = usize::from(self.diff_scroll);
+        self.diff_selection_anchor = None;
     }
 
     fn first_hunk_scroll(&self, file_index: usize) -> u16 {
@@ -870,6 +1461,8 @@ impl ReviewScreenState {
             self.selected_diff_file = 0;
             self.diff_scroll = 0;
             self.selected_hunk = 0;
+            self.selected_diff_line = 0;
+            self.diff_selection_anchor = None;
             return;
         };
 
@@ -881,6 +1474,8 @@ impl ReviewScreenState {
             self.selected_diff_file = 0;
             self.diff_scroll = 0;
             self.selected_hunk = 0;
+            self.selected_diff_line = 0;
+            self.diff_selection_anchor = None;
         }
     }
 
@@ -898,6 +1493,8 @@ impl ReviewScreenState {
         self.selected_diff_file = file_index;
         self.selected_hunk = 0;
         self.diff_scroll = self.first_hunk_scroll(file_index);
+        self.selected_diff_line = usize::from(self.diff_scroll);
+        self.diff_selection_anchor = None;
     }
 
     fn set_active_hunk(&mut self, file_index: usize, hunk_start: usize, hunk_index: usize) {
@@ -919,11 +1516,63 @@ impl ReviewScreenState {
             })
             .unwrap_or(centered_start);
         self.diff_scroll = u16::try_from(clamped_scroll).unwrap_or(u16::MAX);
+        self.selected_diff_line = hunk_start;
+        self.diff_selection_anchor = None;
 
         if let Some(row_index) = self
             .diff_tree_rows()
             .iter()
             .position(|row| row.file_index == Some(file_index))
+        {
+            self.selected_diff_row = row_index;
+        }
+    }
+
+    fn pending_comment_locations(&self) -> Vec<PendingCommentLocation> {
+        let Some(diff) = self.diff.as_ref() else {
+            return Vec::new();
+        };
+
+        let mut locations = self
+            .pending_review_comments
+            .iter()
+            .filter_map(|comment| {
+                let file_index = diff
+                    .files
+                    .iter()
+                    .position(|file| file.path == comment.path)?;
+                let file = diff.files.get(file_index)?;
+                let row_index = pending_comment_row_index(file, comment)?;
+                Some(PendingCommentLocation {
+                    comment_id: comment.id,
+                    file_index,
+                    row_index,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        locations.sort_unstable_by_key(|location| {
+            (location.file_index, location.row_index, location.comment_id)
+        });
+        locations.dedup_by_key(|location| (location.file_index, location.row_index));
+        locations
+    }
+
+    fn jump_to_pending_comment_location(&mut self, location: PendingCommentLocation) {
+        self.ensure_diff_file_expanded(location.file_index);
+        self.set_selected_diff_file(location.file_index);
+        self.selected_diff_line = location.row_index;
+        self.diff_selection_anchor = None;
+
+        if let Some(file) = self.selected_diff_file() {
+            self.selected_hunk = hunk_index_for_row(file, location.row_index).unwrap_or(0);
+        }
+        self.keep_selected_line_visible();
+
+        if let Some(row_index) = self
+            .diff_tree_rows()
+            .iter()
+            .position(|row| row.file_index == Some(location.file_index))
         {
             self.selected_diff_row = row_index;
         }
@@ -1014,6 +1663,35 @@ pub enum ReviewTab {
     Diff,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum DiffFocus {
+    Files,
+    Content,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PendingReviewCommentSide {
+    Left,
+    Right,
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingReviewCommentDraft {
+    pub id: u64,
+    pub path: String,
+    pub side: PendingReviewCommentSide,
+    pub line: u64,
+    pub start_line: Option<u64>,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PendingCommentLocation {
+    comment_id: u64,
+    file_index: usize,
+    row_index: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct DiffTreeRow {
     pub key: String,
@@ -1022,6 +1700,119 @@ pub struct DiffTreeRow {
     pub is_directory: bool,
     pub is_collapsed: bool,
     pub file_index: Option<usize>,
+}
+
+fn row_line_for_side(
+    row: &crate::domain::PullRequestDiffRow,
+    side: PendingReviewCommentSide,
+) -> Option<usize> {
+    match side {
+        PendingReviewCommentSide::Left => row.left_line_number,
+        PendingReviewCommentSide::Right => row.right_line_number,
+    }
+}
+
+fn pending_comment_bounds(line: u64, start_line: Option<u64>) -> (u64, u64) {
+    let start = start_line.unwrap_or(line).min(line);
+    let end = start_line.unwrap_or(line).max(line);
+    (start, end)
+}
+
+fn pending_comment_matches_current_diff(
+    diff: &crate::domain::PullRequestDiffData,
+    comment: &PendingReviewCommentDraft,
+) -> bool {
+    let Some(file) = diff.files.iter().find(|file| file.path == comment.path) else {
+        return false;
+    };
+
+    let start = comment.start_line.unwrap_or(comment.line).min(comment.line);
+    let end = comment.start_line.unwrap_or(comment.line).max(comment.line);
+    let required = end.saturating_sub(start).saturating_add(1) as usize;
+    let mut matched = 0usize;
+
+    for row in &file.rows {
+        if !is_commentable_diff_row(row, comment.side) {
+            continue;
+        }
+        let Some(line) = row_line_for_side(row, comment.side).map(|line| line as u64) else {
+            continue;
+        };
+        if line >= start && line <= end {
+            matched = matched.saturating_add(1);
+            if matched >= required {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn pending_comment_row_index(
+    file: &PullRequestDiffFile,
+    comment: &PendingReviewCommentDraft,
+) -> Option<usize> {
+    let start = comment.start_line.unwrap_or(comment.line).min(comment.line);
+    let end = comment.start_line.unwrap_or(comment.line).max(comment.line);
+    file.rows.iter().position(|row| {
+        let Some(line) = row_line_for_side(row, comment.side).map(|line| line as u64) else {
+            return false;
+        };
+        line >= start && line <= end
+    })
+}
+
+fn hunk_index_for_row(file: &PullRequestDiffFile, row_index: usize) -> Option<usize> {
+    if file.hunk_starts.is_empty() {
+        return None;
+    }
+    if row_index < file.hunk_starts[0] {
+        return None;
+    }
+
+    let position = file
+        .hunk_starts
+        .partition_point(|start| *start <= row_index);
+    position.checked_sub(1)
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum Direction {
+    Up,
+    Down,
+}
+
+fn next_commentable_row(
+    rows: &[crate::domain::PullRequestDiffRow],
+    from: usize,
+    side: PendingReviewCommentSide,
+    direction: Direction,
+) -> Option<usize> {
+    if rows.is_empty() {
+        return None;
+    }
+
+    let next_index = match direction {
+        Direction::Down => from.saturating_add(1),
+        Direction::Up => from.saturating_sub(1),
+    };
+    if next_index >= rows.len() || (direction == Direction::Up && from == 0) {
+        return None;
+    }
+
+    let row = rows.get(next_index)?;
+    is_commentable_diff_row(row, side).then_some(next_index)
+}
+
+fn is_commentable_diff_row(
+    row: &crate::domain::PullRequestDiffRow,
+    side: PendingReviewCommentSide,
+) -> bool {
+    if row.kind == crate::domain::PullRequestDiffRowKind::Context {
+        return false;
+    }
+    row_line_for_side(row, side).is_some()
 }
 
 fn append_reply_nodes(
@@ -1269,7 +2060,9 @@ fn join_path(parent: &str, segment: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ReviewScreenState, ReviewTab, build_diff_tree_rows};
+    use super::{
+        DiffFocus, PendingReviewCommentDraft, ReviewScreenState, ReviewTab, build_diff_tree_rows,
+    };
     use crate::domain::{
         PullRequestData, PullRequestDiffData, PullRequestDiffFile, PullRequestDiffFileStatus,
         PullRequestDiffRow, PullRequestDiffRowKind, PullRequestSummary,
@@ -1291,6 +2084,30 @@ mod tests {
             right_line_number: None,
             left_text: String::new(),
             right_text: String::new(),
+            left_highlights: Vec::new(),
+            right_highlights: Vec::new(),
+            kind: PullRequestDiffRowKind::Context,
+        }
+    }
+
+    fn paired_row(left: usize, right: usize) -> PullRequestDiffRow {
+        PullRequestDiffRow {
+            left_line_number: Some(left),
+            right_line_number: Some(right),
+            left_text: format!("left-{left}"),
+            right_text: format!("right-{right}"),
+            left_highlights: Vec::new(),
+            right_highlights: Vec::new(),
+            kind: PullRequestDiffRowKind::Modified,
+        }
+    }
+
+    fn numbered_context_row(left: usize, right: usize) -> PullRequestDiffRow {
+        PullRequestDiffRow {
+            left_line_number: Some(left),
+            right_line_number: Some(right),
+            left_text: format!("left-{left}"),
+            right_text: format!("right-{right}"),
             left_highlights: Vec::new(),
             right_highlights: Vec::new(),
             kind: PullRequestDiffRowKind::Context,
@@ -1405,6 +2222,7 @@ mod tests {
         });
         review.selected_diff_file = 0;
         review.diff_scroll = 9;
+        review.selected_diff_line = 9;
 
         review.jump_next_hunk();
 
@@ -1426,6 +2244,7 @@ mod tests {
         });
         review.selected_diff_file = 0;
         review.diff_scroll = 4;
+        review.selected_diff_line = 4;
 
         review.jump_prev_hunk();
 
@@ -1492,5 +2311,358 @@ mod tests {
             row.is_directory || row.key.contains("docs/readme.md") || row.key.contains("docs")
         }));
         assert_eq!(review.selected_diff_file, 1);
+    }
+
+    #[test]
+    fn pending_comment_from_selected_line_prefers_right_side() {
+        let mut review = build_review_state();
+        let mut file = diff_file("alpha.rs");
+        file.rows = vec![paired_row(5, 8)];
+        file.hunk_starts = vec![0];
+        review.set_diff(PullRequestDiffData { files: vec![file] });
+
+        review
+            .upsert_pending_review_comment_from_selection("review me".to_owned())
+            .expect("pending comment should be staged");
+
+        let pending = review.pending_review_comments();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].path, "alpha.rs");
+        assert_eq!(pending[0].side, super::PendingReviewCommentSide::Right);
+        assert_eq!(pending[0].line, 8);
+        assert_eq!(pending[0].start_line, None);
+    }
+
+    #[test]
+    fn pending_comment_from_range_sets_start_line() {
+        let mut review = build_review_state();
+        let mut file = diff_file("alpha.rs");
+        file.rows = vec![paired_row(10, 20), paired_row(11, 21), paired_row(12, 22)];
+        file.hunk_starts = vec![0];
+        review.set_diff(PullRequestDiffData { files: vec![file] });
+
+        review.diff_selection_anchor = Some(0);
+        review.selected_diff_line = 2;
+
+        review
+            .upsert_pending_review_comment_from_selection("range".to_owned())
+            .expect("pending range comment should be staged");
+
+        let pending = review.pending_review_comments();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].line, 22);
+        assert_eq!(pending[0].start_line, Some(20));
+    }
+
+    #[test]
+    fn editing_inside_pending_range_updates_existing_comment() {
+        let mut review = build_review_state();
+        let mut file = diff_file("alpha.rs");
+        file.rows = vec![paired_row(10, 20), paired_row(11, 21), paired_row(12, 22)];
+        file.hunk_starts = vec![0];
+        review.set_diff(PullRequestDiffData { files: vec![file] });
+
+        review.diff_selection_anchor = Some(0);
+        review.selected_diff_line = 2;
+        review
+            .upsert_pending_review_comment_from_selection("original".to_owned())
+            .expect("pending range comment should be staged");
+        assert_eq!(review.pending_review_comment_count(), 1);
+
+        // Cursor inside the existing range, but without selecting the full range.
+        review.diff_selection_anchor = None;
+        review.selected_diff_line = 1;
+        review
+            .upsert_pending_review_comment_from_selection("edited".to_owned())
+            .expect("editing inside range should update existing comment");
+
+        let pending = review.pending_review_comments();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].body, "edited");
+        assert_eq!(pending[0].line, 22);
+        assert_eq!(pending[0].start_line, Some(20));
+    }
+
+    #[test]
+    fn deleting_inside_pending_range_removes_existing_comment() {
+        let mut review = build_review_state();
+        let mut file = diff_file("alpha.rs");
+        file.rows = vec![paired_row(10, 20), paired_row(11, 21), paired_row(12, 22)];
+        file.hunk_starts = vec![0];
+        review.set_diff(PullRequestDiffData { files: vec![file] });
+
+        review.diff_selection_anchor = Some(0);
+        review.selected_diff_line = 2;
+        review
+            .upsert_pending_review_comment_from_selection("original".to_owned())
+            .expect("pending range comment should be staged");
+        assert_eq!(review.pending_review_comment_count(), 1);
+
+        // Cursor inside the existing range, but without selecting the full range.
+        review.diff_selection_anchor = None;
+        review.selected_diff_line = 1;
+        assert!(review.remove_selected_pending_review_comment());
+        assert_eq!(review.pending_review_comment_count(), 0);
+    }
+
+    #[test]
+    fn set_data_keeps_pending_inline_comments_when_head_changes() {
+        let mut review = build_review_state();
+        let mut file = diff_file("alpha.rs");
+        file.rows = vec![paired_row(10, 20)];
+        file.hunk_starts = vec![0];
+        review.set_diff(PullRequestDiffData { files: vec![file] });
+
+        review
+            .upsert_pending_review_comment_from_selection("staged".to_owned())
+            .expect("pending comment should be staged");
+        assert_eq!(review.pending_review_comment_count(), 1);
+
+        let mut refreshed = review.data.clone();
+        refreshed.head_sha = "new-head-sha".to_owned();
+
+        let changed = review.set_data(refreshed);
+
+        assert!(changed);
+        assert_eq!(review.pending_review_comment_count(), 1);
+        assert_eq!(review.pull.head_sha, "new-head-sha");
+    }
+
+    #[test]
+    fn pending_comments_are_marked_outdated_when_diff_no_longer_matches() {
+        let mut review = build_review_state();
+        let mut file = diff_file("alpha.rs");
+        file.rows = vec![paired_row(10, 20)];
+        file.hunk_starts = vec![0];
+        review.set_diff(PullRequestDiffData { files: vec![file] });
+
+        review
+            .upsert_pending_review_comment_from_selection("staged".to_owned())
+            .expect("pending comment should be staged");
+        assert_eq!(review.pending_review_comment_count(), 1);
+
+        let mut refreshed = diff_file("alpha.rs");
+        refreshed.rows = vec![paired_row(30, 40)];
+        refreshed.hunk_starts = vec![0];
+        review.set_diff(PullRequestDiffData {
+            files: vec![refreshed],
+        });
+
+        let pending = review.pending_review_comments();
+        assert_eq!(pending.len(), 1);
+        assert!(review.pending_review_comment_is_outdated(&pending[0]));
+    }
+
+    #[test]
+    fn jump_next_pending_comment_wraps_across_files() {
+        let mut review = build_review_state();
+        let mut first = diff_file("alpha.rs");
+        first.rows = vec![paired_row(10, 20)];
+        first.hunk_starts = vec![0];
+        let mut second = diff_file("beta.rs");
+        second.rows = vec![paired_row(30, 40)];
+        second.hunk_starts = vec![0];
+        review.set_diff(PullRequestDiffData {
+            files: vec![first, second],
+        });
+
+        review.pending_review_comments = vec![
+            PendingReviewCommentDraft {
+                id: 1,
+                path: "alpha.rs".to_owned(),
+                side: super::PendingReviewCommentSide::Right,
+                line: 20,
+                start_line: None,
+                body: "first".to_owned(),
+            },
+            PendingReviewCommentDraft {
+                id: 2,
+                path: "beta.rs".to_owned(),
+                side: super::PendingReviewCommentSide::Right,
+                line: 40,
+                start_line: None,
+                body: "second".to_owned(),
+            },
+        ];
+
+        review.selected_diff_file = 0;
+        review.selected_diff_line = 0;
+        assert!(review.jump_next_pending_review_comment());
+        assert_eq!(review.selected_diff_file, 1);
+        assert_eq!(review.selected_diff_line, 0);
+
+        assert!(review.jump_next_pending_review_comment());
+        assert_eq!(review.selected_diff_file, 0);
+        assert_eq!(review.selected_diff_line, 0);
+    }
+
+    #[test]
+    fn jump_prev_pending_comment_wraps_across_files() {
+        let mut review = build_review_state();
+        let mut first = diff_file("alpha.rs");
+        first.rows = vec![paired_row(10, 20)];
+        first.hunk_starts = vec![0];
+        let mut second = diff_file("beta.rs");
+        second.rows = vec![paired_row(30, 40)];
+        second.hunk_starts = vec![0];
+        review.set_diff(PullRequestDiffData {
+            files: vec![first, second],
+        });
+
+        review.pending_review_comments = vec![
+            PendingReviewCommentDraft {
+                id: 1,
+                path: "alpha.rs".to_owned(),
+                side: super::PendingReviewCommentSide::Right,
+                line: 20,
+                start_line: None,
+                body: "first".to_owned(),
+            },
+            PendingReviewCommentDraft {
+                id: 2,
+                path: "beta.rs".to_owned(),
+                side: super::PendingReviewCommentSide::Right,
+                line: 40,
+                start_line: None,
+                body: "second".to_owned(),
+            },
+        ];
+
+        review.selected_diff_file = 0;
+        review.selected_diff_line = 0;
+        assert!(review.jump_prev_pending_review_comment());
+        assert_eq!(review.selected_diff_file, 1);
+        assert_eq!(review.selected_diff_line, 0);
+    }
+
+    #[test]
+    fn visual_selection_does_not_start_on_context_row() {
+        let mut review = build_review_state();
+        let mut file = diff_file("alpha.rs");
+        file.rows = vec![numbered_context_row(1, 1), paired_row(2, 2)];
+        file.hunk_starts = vec![1];
+        review.set_diff(PullRequestDiffData { files: vec![file] });
+
+        review.selected_diff_line = 0;
+        review.toggle_diff_selection_anchor();
+
+        assert!(!review.has_diff_selection_anchor());
+    }
+
+    #[test]
+    fn visual_selection_does_not_start_on_existing_pending_comment_range() {
+        let mut review = build_review_state();
+        let mut file = diff_file("alpha.rs");
+        file.rows = vec![paired_row(10, 20), paired_row(11, 21)];
+        file.hunk_starts = vec![0];
+        review.set_diff(PullRequestDiffData { files: vec![file] });
+        review.active_tab = ReviewTab::Diff;
+        review.diff_focus = DiffFocus::Content;
+        review.selected_diff_line = 0;
+
+        review
+            .upsert_pending_review_comment_from_selection("existing".to_owned())
+            .expect("pending comment should be staged");
+
+        review.selected_diff_line = 0;
+        review.toggle_diff_selection_anchor();
+
+        assert!(!review.has_diff_selection_anchor());
+    }
+
+    #[test]
+    fn visual_selection_does_not_expand_into_non_commentable_rows() {
+        let mut review = build_review_state();
+        let mut file = diff_file("alpha.rs");
+        file.rows = vec![
+            paired_row(10, 20),
+            numbered_context_row(11, 21),
+            paired_row(12, 22),
+        ];
+        file.hunk_starts = vec![0, 2];
+        review.set_diff(PullRequestDiffData { files: vec![file] });
+        review.active_tab = ReviewTab::Diff;
+        review.diff_focus = DiffFocus::Content;
+        review.selected_diff_line = 0;
+
+        review.toggle_diff_selection_anchor();
+        review.move_down();
+
+        assert_eq!(review.selected_diff_line, 0);
+        assert_eq!(review.selected_diff_range(), Some((0, 0)));
+    }
+
+    #[test]
+    fn visual_selection_does_not_expand_into_existing_pending_comment_range() {
+        let mut review = build_review_state();
+        let mut file = diff_file("alpha.rs");
+        file.rows = vec![paired_row(10, 20), paired_row(11, 21), paired_row(12, 22)];
+        file.hunk_starts = vec![0];
+        review.set_diff(PullRequestDiffData { files: vec![file] });
+        review.active_tab = ReviewTab::Diff;
+        review.diff_focus = DiffFocus::Content;
+
+        review.selected_diff_line = 1;
+        review
+            .upsert_pending_review_comment_from_selection("existing".to_owned())
+            .expect("pending comment should be staged");
+
+        review.selected_diff_line = 0;
+        review.toggle_diff_selection_anchor();
+        review.move_down();
+
+        assert_eq!(review.selected_diff_line, 0);
+        assert_eq!(review.selected_diff_range(), Some((0, 0)));
+    }
+
+    #[test]
+    fn pending_comment_selection_cannot_overlap_existing_pending_comment() {
+        let mut review = build_review_state();
+        let mut file = diff_file("alpha.rs");
+        file.rows = vec![
+            paired_row(10, 20),
+            paired_row(11, 21),
+            paired_row(12, 22),
+            paired_row(13, 23),
+        ];
+        file.hunk_starts = vec![0];
+        review.set_diff(PullRequestDiffData { files: vec![file] });
+        review.active_tab = ReviewTab::Diff;
+        review.diff_focus = DiffFocus::Content;
+
+        review.diff_selection_anchor = Some(1);
+        review.selected_diff_line = 2;
+        review
+            .upsert_pending_review_comment_from_selection("existing".to_owned())
+            .expect("pending comment should be staged");
+        assert_eq!(review.pending_review_comment_count(), 1);
+
+        review.diff_selection_anchor = Some(0);
+        review.selected_diff_line = 3;
+        let result = review.upsert_pending_review_comment_from_selection("overlap".to_owned());
+
+        assert_eq!(
+            result,
+            Err("selection overlaps an existing pending comment")
+        );
+        assert_eq!(review.pending_review_comment_count(), 1);
+    }
+
+    #[test]
+    fn visual_selection_does_not_cross_hunk_boundary() {
+        let mut review = build_review_state();
+        let mut file = diff_file("alpha.rs");
+        file.rows = vec![paired_row(10, 20), paired_row(11, 21)];
+        file.hunk_starts = vec![0, 1];
+        review.set_diff(PullRequestDiffData { files: vec![file] });
+        review.active_tab = ReviewTab::Diff;
+        review.diff_focus = DiffFocus::Content;
+        review.selected_diff_line = 0;
+
+        review.toggle_diff_selection_anchor();
+        review.move_down();
+
+        assert_eq!(review.selected_diff_line, 0);
+        assert_eq!(review.selected_diff_range(), Some((0, 0)));
     }
 }

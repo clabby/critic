@@ -1,6 +1,8 @@
 //! Review screen renderer with tabs for threads and diffs.
 
-use crate::app::state::{ReviewScreenState, ReviewTab};
+use crate::app::state::{
+    PendingReviewCommentDraft, PendingReviewCommentSide, ReviewScreenState, ReviewTab,
+};
 use crate::domain::{
     CommentRef, ListNodeKind, PullRequestDiffFile, PullRequestDiffFileStatus,
     PullRequestDiffHighlightRange, PullRequestDiffRowKind,
@@ -17,8 +19,9 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
-    ScrollbarState, Tabs, Wrap,
+    ScrollbarState, Wrap,
 };
+use std::collections::HashMap;
 
 pub fn render(
     frame: &mut Frame<'_>,
@@ -26,33 +29,10 @@ pub fn render(
     review: &mut ReviewScreenState,
     markdown: &mut MarkdownRenderer,
 ) {
-    let rows = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(area);
-    render_tabs(frame, rows[0], review.active_tab());
-
     match review.active_tab() {
-        ReviewTab::Threads => render_threads_tab(frame, rows[1], review, markdown),
-        ReviewTab::Diff => render_diff_tab(frame, rows[1], review, markdown),
+        ReviewTab::Threads => render_threads_tab(frame, area, review, markdown),
+        ReviewTab::Diff => render_diff_tab(frame, area, review, markdown),
     }
-}
-
-fn render_tabs(frame: &mut Frame<'_>, area: Rect, tab: ReviewTab) {
-    let titles = vec![" Threads ", " Diff "];
-    let selected = match tab {
-        ReviewTab::Threads => 0,
-        ReviewTab::Diff => 1,
-    };
-
-    let tabs = Tabs::new(titles)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(theme::border()),
-        )
-        .highlight_style(theme::selected())
-        .style(theme::dim())
-        .select(selected);
-
-    frame.render_widget(tabs, area);
 }
 
 fn render_threads_tab(
@@ -75,13 +55,26 @@ fn render_diff_tab(
     markdown: &mut MarkdownRenderer,
 ) {
     let panes =
-        Layout::horizontal([Constraint::Percentage(25), Constraint::Percentage(75)]).split(area);
+        Layout::horizontal([Constraint::Percentage(15), Constraint::Percentage(85)]).split(area);
 
     render_diff_files(frame, panes[0], review);
     render_diff_content(frame, panes[1], review, markdown);
 }
 
 fn render_left_pane(frame: &mut Frame<'_>, area: Rect, review: &ReviewScreenState) {
+    let pending_count = review.pending_review_comment_count();
+    let sections = if pending_count > 0 {
+        let pending_height = (pending_count.min(3) as u16).saturating_add(2);
+        Layout::vertical([Constraint::Length(pending_height), Constraint::Min(4)]).split(area)
+    } else {
+        Layout::vertical([Constraint::Min(1)]).split(area)
+    };
+
+    if pending_count > 0 {
+        render_pending_review_sidebar(frame, sections[0], review);
+    }
+
+    let comments_area = *sections.last().unwrap_or(&area);
     let block = Block::default()
         .title(Span::styled(
             format!(" Comments ({}) ", review.nodes.len()),
@@ -200,7 +193,51 @@ fn render_left_pane(frame: &mut Frame<'_>, area: Rect, review: &ReviewScreenStat
         list_state.select(Some(review.selected_row));
     }
 
-    frame.render_stateful_widget(list, area, &mut list_state);
+    frame.render_stateful_widget(list, comments_area, &mut list_state);
+}
+
+fn render_pending_review_sidebar(frame: &mut Frame<'_>, area: Rect, review: &ReviewScreenState) {
+    let pending = review.pending_review_comments();
+    let block = Block::default()
+        .title(Span::styled(
+            format!(" Pending Review Comments ({}) ", pending.len()),
+            theme::title(),
+        ))
+        .borders(Borders::ALL)
+        .border_style(theme::border());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let visible = usize::from(inner.height);
+    if visible == 0 {
+        return;
+    }
+
+    let lines = pending
+        .iter()
+        .take(visible)
+        .map(|comment| {
+            let location = if let Some(start) = comment.start_line {
+                format!("{}:{}-{}", comment.path, start, comment.line)
+            } else {
+                format!("{}:{}", comment.path, comment.line)
+            };
+            let preview = short_preview(&comment.body, 42);
+            let outdated = review.pending_review_comment_is_outdated(comment);
+            Line::from(vec![
+                Span::styled("• ", theme::open_thread()),
+                Span::styled(location, theme::dim()),
+                if outdated {
+                    Span::styled(" [outdated]", theme::error())
+                } else {
+                    Span::raw("")
+                },
+                Span::raw(" "),
+                Span::raw(preview),
+            ])
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn render_right_pane(
@@ -283,19 +320,33 @@ fn render_diff_files(frame: &mut Frame<'_>, area: Rect, review: &ReviewScreenSta
     let file_count = review.diff_file_count();
     let rows = review.diff_tree_rows();
     let row_count = rows.len();
+    let border_style = if review.is_diff_content_focused() {
+        theme::border()
+    } else {
+        theme::open_thread()
+    };
     let block = Block::default()
         .title(Span::styled(
             format!(" Files ({file_count}) ",),
             theme::title(),
         ))
         .borders(Borders::ALL)
-        .border_style(theme::border());
+        .border_style(border_style);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let sections = Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).split(inner);
+    let mut constraints = vec![Constraint::Length(3)];
+    if review.pending_review_comment_count() > 0 {
+        constraints.push(Constraint::Length(5));
+    }
+    constraints.push(Constraint::Min(0));
+    let sections = Layout::vertical(constraints).split(inner);
     let search_area = sections[0];
-    let body_area = sections[1];
+    let (pending_area, body_area) = if review.pending_review_comment_count() > 0 {
+        (Some(sections[1]), sections[2])
+    } else {
+        (None, sections[1])
+    };
 
     let focused = review.is_diff_search_focused();
     let title_style = if focused {
@@ -317,6 +368,8 @@ fn render_diff_files(frame: &mut Frame<'_>, area: Rect, review: &ReviewScreenSta
             Span::styled(
                 if focused {
                     "(type to filter changed files)"
+                } else if review.is_diff_content_focused() {
+                    "(focus files to search)"
                 } else {
                     "(press [s] to search files)"
                 },
@@ -336,6 +389,10 @@ fn render_diff_files(frame: &mut Frame<'_>, area: Rect, review: &ReviewScreenSta
     let search_widget = Paragraph::new(search_line).block(search_block);
     frame.render_widget(search_widget, search_area);
 
+    if let Some(pending_area) = pending_area {
+        render_pending_review_sidebar(frame, pending_area, review);
+    }
+
     let (list_area, scrollbar_area) = if body_area.width > 1 {
         let columns =
             Layout::horizontal([Constraint::Min(1), Constraint::Length(1)]).split(body_area);
@@ -345,6 +402,11 @@ fn render_diff_files(frame: &mut Frame<'_>, area: Rect, review: &ReviewScreenSta
     };
 
     let items: Vec<ListItem<'static>> = if let Some(diff) = &review.diff {
+        let mut pending_by_path = HashMap::<String, usize>::new();
+        for draft in review.pending_review_comments() {
+            *pending_by_path.entry(draft.path.clone()).or_default() += 1;
+        }
+
         if rows.is_empty() {
             vec![ListItem::new(Line::from(vec![Span::styled(
                 "No changed files.",
@@ -381,6 +443,18 @@ fn render_diff_files(frame: &mut Frame<'_>, area: Rect, review: &ReviewScreenSta
                     ListItem::new(Line::from(vec![
                         Span::styled(indent.to_string(), theme::dim()),
                         status,
+                        row.file_index
+                            .and_then(|index| diff.files.get(index))
+                            .and_then(|file| pending_by_path.get(&file.path).copied())
+                            .filter(|count| *count > 0)
+                            .map(|count| {
+                                if count > 1 {
+                                    Span::styled(format!("●{count} "), theme::open_thread())
+                                } else {
+                                    Span::styled("● ".to_owned(), theme::open_thread())
+                                }
+                            })
+                            .unwrap_or_else(|| Span::raw("")),
                         Span::raw(row.label.clone()),
                     ]))
                 })
@@ -436,22 +510,46 @@ fn render_diff_content(
     review: &mut ReviewScreenState,
     markdown: &mut MarkdownRenderer,
 ) {
+    let border_style = if review.is_diff_content_focused() {
+        theme::open_thread()
+    } else {
+        theme::border()
+    };
+    let pending_count = review.pending_review_comment_count();
     let title = review
         .selected_diff_file()
-        .map(|file| format!(" Diff: {} ", file.path))
+        .map(|file| {
+            if pending_count > 0 {
+                format!(" Diff: {}  [pending: {}] ", file.path, pending_count)
+            } else {
+                format!(" Diff: {} ", file.path)
+            }
+        })
         .unwrap_or_else(|| " Diff ".to_owned());
     let block = Block::default()
         .title(Span::styled(title, theme::title()))
         .borders(Borders::ALL)
-        .border_style(theme::border());
+        .border_style(border_style);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let (text_area, scrollbar_area) = if inner.width > 1 {
-        let sections = Layout::horizontal([Constraint::Min(1), Constraint::Length(1)]).split(inner);
+    review.sync_pending_review_preview_target();
+    let hovered_pending_comment = review.selected_pending_review_comment().cloned();
+    let (diff_area, pending_preview_area) = if hovered_pending_comment.is_some() && inner.height > 3
+    {
+        let sections =
+            Layout::vertical([Constraint::Percentage(80), Constraint::Percentage(20)]).split(inner);
         (sections[0], Some(sections[1]))
     } else {
         (inner, None)
+    };
+
+    let (text_area, scrollbar_area) = if diff_area.width > 1 {
+        let sections =
+            Layout::horizontal([Constraint::Min(1), Constraint::Length(1)]).split(diff_area);
+        (sections[0], Some(sections[1]))
+    } else {
+        (diff_area, None)
     };
     review.set_diff_viewport_height(text_area.height.max(1));
 
@@ -461,7 +559,22 @@ fn render_diff_content(
         let content_height = file.rows.len().max(1);
         let max_scroll = content_height.saturating_sub(viewport_height);
         let scroll = usize::from(review.diff_scroll).min(max_scroll);
-        let lines = render_diff_rows(file, text_area.width, left, right, scroll, viewport_height);
+        let pending = review
+            .pending_review_comments_for_file(file)
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        let lines = render_diff_rows(
+            file,
+            text_area.width,
+            left,
+            right,
+            scroll,
+            viewport_height,
+            review.selected_diff_line(),
+            review.selected_diff_range(),
+            &pending,
+        );
         (lines, content_height, scroll)
     } else if let Some(error) = &review.diff_error {
         let lines = vec![Line::from(vec![Span::styled(
@@ -494,6 +607,70 @@ fn render_diff_content(
             .position(scroll);
         frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
     }
+
+    if let (Some(preview_area), Some(comment)) = (pending_preview_area, hovered_pending_comment) {
+        render_pending_comment_preview(frame, preview_area, review, markdown, &comment);
+    }
+}
+
+fn render_pending_comment_preview(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    review: &mut ReviewScreenState,
+    markdown: &mut MarkdownRenderer,
+    comment: &PendingReviewCommentDraft,
+) {
+    let location = if let Some(start) = comment.start_line {
+        format!("{}:{}-{}", comment.path, start, comment.line)
+    } else {
+        format!("{}:{}", comment.path, comment.line)
+    };
+    let title = format!(" Pending Comment Preview ({location}) ");
+    let block = Block::default()
+        .title(Span::styled(title, theme::title()))
+        .borders(Borders::ALL)
+        .border_style(theme::border());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let (text_area, scrollbar_area) = if inner.width > 1 {
+        let columns = Layout::horizontal([Constraint::Min(1), Constraint::Length(1)]).split(inner);
+        (columns[0], Some(columns[1]))
+    } else {
+        (inner, None)
+    };
+
+    let mut lines = markdown.render(&comment.body);
+    if lines.is_empty() {
+        lines.push(Line::from(vec![Span::styled("(empty)", theme::dim())]));
+    }
+
+    let viewport_height = usize::from(text_area.height.max(1));
+    let content_height = wrapped_content_height(&lines, text_area.width.max(1));
+    let max_scroll = content_height.saturating_sub(viewport_height);
+    let scroll = review.clamp_pending_preview_scroll(max_scroll);
+    let paragraph = Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .scroll((u16::try_from(scroll).unwrap_or(u16::MAX), 0));
+    frame.render_widget(paragraph, text_area);
+
+    if content_height > viewport_height
+        && let Some(scrollbar_area) = scrollbar_area
+    {
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None)
+            .track_style(theme::dim())
+            .thumb_style(theme::title());
+        let mut scrollbar_state = ScrollbarState::new(max_scroll.saturating_add(1))
+            .viewport_content_length(viewport_height)
+            .position(scroll);
+        frame.render_stateful_widget(scrollbar, scrollbar_area, &mut scrollbar_state);
+    }
 }
 
 fn render_diff_rows(
@@ -503,19 +680,41 @@ fn render_diff_rows(
     right_syntax: &[Vec<Option<Color>>],
     row_offset: usize,
     row_limit: usize,
+    selected_line: usize,
+    selected_range: Option<(usize, usize)>,
+    pending_comments: &[PendingReviewCommentDraft],
 ) -> Vec<Line<'static>> {
     let width = usize::from(width.max(1));
+    let marker_width = 2usize;
     let separator = " │ ";
-    let available = width.saturating_sub(separator.len());
+    let available = width.saturating_sub(marker_width + separator.len());
     let left_width = available / 2;
     let right_width = available.saturating_sub(left_width);
 
     file.rows
         .iter()
+        .enumerate()
         .skip(row_offset)
         .take(row_limit)
-        .map(|row| {
+        .map(|(row_index, row)| {
+            let in_selected_range = selected_range
+                .map(|(start, end)| row_index >= start && row_index <= end)
+                .unwrap_or(false);
+            let has_pending = pending_comments
+                .iter()
+                .any(|comment| pending_comment_matches_row(comment, row));
+            let (marker, marker_style) = if row_index == selected_line {
+                ("▌ ", theme::open_thread())
+            } else if has_pending {
+                ("● ", theme::resolved_thread())
+            } else if in_selected_range {
+                ("│ ", theme::dim())
+            } else {
+                ("  ", theme::dim())
+            };
+
             let mut spans = Vec::new();
+            spans.push(Span::styled(marker.to_owned(), marker_style));
             spans.extend(render_diff_side(
                 row.left_line_number,
                 &row.left_text,
@@ -525,6 +724,7 @@ fn render_diff_rows(
                 &row.left_highlights,
                 row.kind,
                 true,
+                in_selected_range,
             ));
             spans.push(Span::styled(separator.to_owned(), theme::dim()));
             spans.extend(render_diff_side(
@@ -536,6 +736,7 @@ fn render_diff_rows(
                 &row.right_highlights,
                 row.kind,
                 false,
+                in_selected_range,
             ));
             Line::from(spans)
         })
@@ -550,6 +751,7 @@ fn render_diff_side(
     highlights: &[PullRequestDiffHighlightRange],
     kind: PullRequestDiffRowKind,
     is_left: bool,
+    in_selected_range: bool,
 ) -> Vec<Span<'static>> {
     if width == 0 {
         return Vec::new();
@@ -618,6 +820,18 @@ fn render_diff_side(
     let highlight_style = Style::default()
         .fg(highlight_fg)
         .bg(highlight_bg.unwrap_or(Color::Reset));
+    let selection_bg =
+        theme::blend_with_terminal_bg(theme::open_thread().fg.unwrap_or(Color::Cyan), 0.22);
+    let with_selection = |style: Style| {
+        if in_selected_range {
+            style.bg(selection_bg)
+        } else {
+            style
+        }
+    };
+    let number_style = with_selection(number_style);
+    let content_style = with_selection(content_style);
+    let highlight_style = with_selection(highlight_style);
 
     let mut spans = vec![Span::styled(number, number_style)];
     let line_highlights = clip_and_merge_ranges(highlights, visible_len);
@@ -632,9 +846,7 @@ fn render_diff_side(
     if text.trim().is_empty() {
         let alignment_gap = line_number.is_none() && kind != PullRequestDiffRowKind::Context;
         let filler_style = if alignment_gap {
-            Style::default()
-                .fg(theme::diff_context().fg.unwrap_or(dim_fg))
-                .bg(content_bg.unwrap_or(Color::Reset))
+            Style::default().fg(theme::diff_context().fg.unwrap_or(dim_fg))
         } else if kind == PullRequestDiffRowKind::Modified {
             highlight_style
         } else {
@@ -686,6 +898,29 @@ fn render_diff_side(
         ));
     }
     spans
+}
+
+fn pending_comment_matches_row(
+    comment: &PendingReviewCommentDraft,
+    row: &crate::domain::PullRequestDiffRow,
+) -> bool {
+    let Some(line) = row_line_for_pending_side(row, comment.side) else {
+        return false;
+    };
+    let line = line as u64;
+    let start = comment.start_line.unwrap_or(comment.line).min(comment.line);
+    let end = comment.start_line.unwrap_or(comment.line).max(comment.line);
+    line >= start && line <= end
+}
+
+fn row_line_for_pending_side(
+    row: &crate::domain::PullRequestDiffRow,
+    side: PendingReviewCommentSide,
+) -> Option<usize> {
+    match side {
+        PendingReviewCommentSide::Left => row.left_line_number,
+        PendingReviewCommentSide::Right => row.right_line_number,
+    }
 }
 
 fn clip_and_merge_ranges(
@@ -811,15 +1046,7 @@ fn render_syntax_cells(
 }
 
 fn hatched_filler(width: usize) -> String {
-    let mut filler = String::with_capacity(width);
-    for index in 0..width {
-        if index % 2 == 0 {
-            filler.push('╱');
-        } else {
-            filler.push('╲');
-        }
-    }
-    filler
+    "╱".repeat(width)
 }
 
 fn wrapped_content_height(lines: &[Line<'_>], width: u16) -> usize {

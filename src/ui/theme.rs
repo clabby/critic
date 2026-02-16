@@ -43,7 +43,7 @@ pub struct ThemePalette {
 impl Default for ThemePalette {
     fn default() -> Self {
         Self {
-            border: Color::Blue,
+            border: Color::DarkGray,
             title: Color::LightBlue,
             dim: Color::DarkGray,
             text: Color::Gray,
@@ -76,7 +76,7 @@ impl ThemePalette {
     /// Default light palette optimized for terminal readability.
     pub fn light_default() -> Self {
         Self {
-            border: Color::Blue,
+            border: Color::DarkGray,
             title: Color::Blue,
             dim: Color::DarkGray,
             text: Color::Black,

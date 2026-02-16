@@ -11,9 +11,16 @@ use ratatui::widgets::{Block, Borders, Gauge, Paragraph};
 pub struct HeaderModel {
     pub app_label: String,
     pub context_label: String,
+    pub review_tabs: Option<HeaderTabs>,
     pub operation: Option<String>,
     pub error: Option<String>,
     pub review_progress: Option<ReviewProgress>,
+}
+
+/// Active tab indicator displayed in the header for review route.
+#[derive(Debug, Clone, Copy)]
+pub struct HeaderTabs {
+    pub selected: usize,
 }
 
 /// Review thread progress stats for the selected pull request.
@@ -32,17 +39,19 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, model: &HeaderModel) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let top_left = Line::from(vec![
+    let mut top_left_spans = vec![
         Span::styled(format!(" {}", model.app_label), theme::title()),
         Span::styled(format!(" {}", model.context_label), theme::dim()),
-        if let Some(error) = &model.error {
-            Span::styled(format!("  error: {error}"), theme::error())
-        } else if let Some(operation) = &model.operation {
-            Span::styled(format!("  {operation}"), theme::info())
-        } else {
-            Span::raw("")
-        },
-    ]);
+    ];
+    if let Some(tabs) = model.review_tabs {
+        top_left_spans.extend(review_tabs_spans(tabs));
+    }
+    if let Some(error) = &model.error {
+        top_left_spans.push(Span::styled(format!("  error: {error}"), theme::error()));
+    } else if let Some(operation) = &model.operation {
+        top_left_spans.push(Span::styled(format!("  {operation}"), theme::info()));
+    }
+    let top_left = Line::from(top_left_spans);
 
     if let Some(progress) = model.review_progress {
         let right_width = inner.width.min(44);
@@ -65,6 +74,27 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, model: &HeaderModel) {
     } else {
         frame.render_widget(Paragraph::new(top_left), inner);
     }
+}
+
+fn review_tabs_spans(tabs: HeaderTabs) -> [Span<'static>; 5] {
+    let threads_style = if tabs.selected == 0 {
+        theme::selected()
+    } else {
+        theme::dim()
+    };
+    let diff_style = if tabs.selected == 1 {
+        theme::selected()
+    } else {
+        theme::dim()
+    };
+
+    [
+        Span::raw("  "),
+        Span::styled(" Threads ", threads_style),
+        Span::styled(" | ", theme::dim()),
+        Span::styled(" Diff ", diff_style),
+        Span::raw(""),
+    ]
 }
 
 fn thread_ratio_text(progress: ReviewProgress) -> String {

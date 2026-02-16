@@ -2,8 +2,8 @@
 
 use crate::domain::{PullRequestData, PullRequestDiffData, PullRequestSummary};
 use crate::github::comments::{
-    fetch_pull_request_data, reply_to_review_comment, set_review_thread_resolved,
-    submit_pull_request_review,
+    SubmitReviewComment, fetch_pull_request_data, reply_to_review_comment,
+    set_review_thread_resolved, submit_pull_request_review,
 };
 use crate::github::diff::fetch_pull_request_diff_data;
 use crate::github::pulls::{
@@ -34,6 +34,7 @@ pub enum WorkerMessage {
     MutationApplied {
         pull: PullRequestSummary,
         clear_reply_root_key: Option<String>,
+        clear_pending_review_comments: bool,
         result: Result<PullRequestData, String>,
     },
 }
@@ -58,6 +59,8 @@ pub enum MutationRequest {
         pull_number: u64,
         event: String,
         body: String,
+        comments: Vec<SubmitReviewComment>,
+        expected_head_sha: String,
     },
 }
 
@@ -112,16 +115,13 @@ pub fn spawn_load_specific_pull_request(
                         result: Ok(pull),
                     },
                     Err(error) => {
-                        let detail = match &error {
-                            crate::github::pulls::PullRequestQueryError::Octocrab(source)
-                                if is_not_found(source) =>
-                            {
-                                format!(
-                                    "pull request #{pull_number} was not found in {}",
-                                    repository.label()
-                                )
-                            }
-                            _ => error.to_string(),
+                        let detail = if error.is_not_found() {
+                            format!(
+                                "pull request #{pull_number} was not found in {}",
+                                repository.label()
+                            )
+                        } else {
+                            error.to_string()
                         };
                         WorkerMessage::PullRequestResolved {
                             repository_label: label,
@@ -171,13 +171,6 @@ pub fn spawn_load_pull_request_diff(
     });
 }
 
-fn is_not_found(error: &octocrab::Error) -> bool {
-    matches!(
-        error,
-        octocrab::Error::GitHub { source, .. } if source.status_code.as_u16() == 404
-    )
-}
-
 /// Spawns a mutation followed by a pull request comment refresh.
 pub fn spawn_apply_mutation(
     tx: UnboundedSender<WorkerMessage>,
@@ -187,31 +180,51 @@ pub fn spawn_apply_mutation(
     clear_reply_root_key: Option<String>,
 ) {
     tokio::spawn(async move {
-        let mutation_result = match mutation {
+        let (mutation_result, clear_pending_review_comments) = match mutation {
             MutationRequest::ReplyToReviewComment {
                 owner,
                 repo,
                 pull_number,
                 comment_id,
                 body,
-            } => reply_to_review_comment(&client, &owner, &repo, pull_number, comment_id, &body)
-                .await
-                .map(|_| ()),
+            } => (
+                reply_to_review_comment(&client, &owner, &repo, pull_number, comment_id, &body)
+                    .await
+                    .map(|_| ()),
+                false,
+            ),
             MutationRequest::SetReviewThreadResolved {
                 thread_id,
                 resolved,
-            } => set_review_thread_resolved(&client, &thread_id, resolved)
-                .await
-                .map(|_| ()),
+            } => (
+                set_review_thread_resolved(&client, &thread_id, resolved)
+                    .await
+                    .map(|_| ()),
+                false,
+            ),
             MutationRequest::SubmitPullRequestReview {
                 owner,
                 repo,
                 pull_number,
                 event,
                 body,
-            } => submit_pull_request_review(&client, &owner, &repo, pull_number, &event, &body)
+                comments,
+                expected_head_sha,
+            } => (
+                submit_pull_request_review(
+                    &client,
+                    &owner,
+                    &repo,
+                    pull_number,
+                    &event,
+                    &body,
+                    &comments,
+                    &expected_head_sha,
+                )
                 .await
                 .map(|_| ()),
+                true,
+            ),
         };
 
         let result = match mutation_result {
@@ -224,6 +237,7 @@ pub fn spawn_apply_mutation(
         let _ = tx.send(WorkerMessage::MutationApplied {
             pull,
             clear_reply_root_key,
+            clear_pending_review_comments,
             result,
         });
     });

@@ -4,10 +4,13 @@ use crate::domain::{
     PullRequestDiffData, PullRequestDiffFile, PullRequestDiffFileStatus,
     PullRequestDiffHighlightRange, PullRequestDiffRow, PullRequestDiffRowKind, PullRequestSummary,
 };
+use crate::github::client::gh_auth_token;
+use secrecy::ExposeSecret;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::{Component, Path, PathBuf};
+use std::process::Stdio;
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use tokio::fs;
@@ -64,8 +67,15 @@ pub async fn fetch_pull_request_diff_data(
         return Ok(PullRequestDiffData { files: Vec::new() });
     }
 
-    let repo_dir = ensure_repo_available(pull).await?;
-    fetch_required_commits(&repo_dir, &pull.base_sha, &pull.head_sha).await?;
+    let git_auth = build_git_auth_header().await;
+    let repo_dir = ensure_repo_available(pull, git_auth.as_deref()).await?;
+    fetch_required_commits(
+        &repo_dir,
+        &pull.base_sha,
+        &pull.head_sha,
+        git_auth.as_deref(),
+    )
+    .await?;
 
     let (workspace_root, base_root, head_root) = create_workspace(pull).await?;
     let mut source_by_path = HashMap::<String, SourcePair>::new();
@@ -73,8 +83,10 @@ pub async fn fetch_pull_request_diff_data(
     for raw_path in changed_files {
         let normalized = normalize_changed_path(raw_path)?;
 
-        let base_source = git_show_file(&repo_dir, &pull.base_sha, raw_path).await?;
-        let head_source = git_show_file(&repo_dir, &pull.head_sha, raw_path).await?;
+        let base_source =
+            git_show_file(&repo_dir, &pull.base_sha, raw_path, git_auth.as_deref()).await?;
+        let head_source =
+            git_show_file(&repo_dir, &pull.head_sha, raw_path, git_auth.as_deref()).await?;
         if base_source.is_none() && head_source.is_none() {
             continue;
         }
@@ -159,7 +171,10 @@ struct RawDifftChange {
     end: usize,
 }
 
-async fn ensure_repo_available(pull: &PullRequestSummary) -> Result<PathBuf> {
+async fn ensure_repo_available(
+    pull: &PullRequestSummary,
+    git_auth: Option<&str>,
+) -> Result<PathBuf> {
     let repo_dir = repo_cache_dir(pull)?;
     if repo_dir.exists() {
         return Ok(repo_dir);
@@ -185,18 +200,24 @@ async fn ensure_repo_available(pull: &PullRequestSummary) -> Result<PathBuf> {
         ],
         None,
         "clone repository",
+        git_auth,
     )
     .await?;
 
     Ok(repo_dir)
 }
 
-async fn fetch_required_commits(repo_dir: &Path, base_sha: &str, head_sha: &str) -> Result<()> {
+async fn fetch_required_commits(
+    repo_dir: &Path,
+    base_sha: &str,
+    head_sha: &str,
+    git_auth: Option<&str>,
+) -> Result<()> {
     let mut missing = Vec::<String>::new();
-    if !commit_exists(repo_dir, base_sha).await? {
+    if !commit_exists(repo_dir, base_sha, git_auth).await? {
         missing.push(base_sha.to_owned());
     }
-    if base_sha != head_sha && !commit_exists(repo_dir, head_sha).await? {
+    if base_sha != head_sha && !commit_exists(repo_dir, head_sha, git_auth).await? {
         missing.push(head_sha.to_owned());
     }
     if missing.is_empty() {
@@ -208,17 +229,19 @@ async fn fetch_required_commits(repo_dir: &Path, base_sha: &str, head_sha: &str)
         .into_iter()
         .filter(|sha| unique.insert(sha.clone()))
         .collect::<Vec<_>>();
-    fetch_commits(repo_dir, &refs).await?;
+    fetch_commits(repo_dir, &refs, git_auth).await?;
     Ok(())
 }
 
-async fn commit_exists(repo_dir: &Path, sha: &str) -> Result<bool> {
-    let output = Command::new("git")
+async fn commit_exists(repo_dir: &Path, sha: &str, git_auth: Option<&str>) -> Result<bool> {
+    let mut command = git_command(git_auth);
+    command
         .arg("-C")
         .arg(repo_dir)
         .arg("cat-file")
         .arg("-e")
-        .arg(format!("{sha}^{{commit}}"))
+        .arg(format!("{sha}^{{commit}}"));
+    let output = command
         .output()
         .await
         .map_err(|source| PullRequestDiffError::GitIo {
@@ -229,8 +252,8 @@ async fn commit_exists(repo_dir: &Path, sha: &str) -> Result<bool> {
     Ok(output.status.success())
 }
 
-async fn fetch_commits(repo_dir: &Path, refs: &[String]) -> Result<()> {
-    let mut command = Command::new("git");
+async fn fetch_commits(repo_dir: &Path, refs: &[String], git_auth: Option<&str>) -> Result<()> {
+    let mut command = git_command(git_auth);
     command.arg("-C").arg(repo_dir).arg("fetch").arg("origin");
     for reference in refs {
         command.arg(reference);
@@ -286,13 +309,16 @@ async fn create_workspace(pull: &PullRequestSummary) -> Result<(PathBuf, PathBuf
     Ok((workspace, base, head))
 }
 
-async fn git_show_file(repo_dir: &Path, sha: &str, path: &str) -> Result<Option<String>> {
+async fn git_show_file(
+    repo_dir: &Path,
+    sha: &str,
+    path: &str,
+    git_auth: Option<&str>,
+) -> Result<Option<String>> {
     let spec = format!("{sha}:{path}");
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo_dir)
-        .arg("show")
-        .arg(spec)
+    let mut command = git_command(git_auth);
+    command.arg("-C").arg(repo_dir).arg("show").arg(spec);
+    let output = command
         .output()
         .await
         .map_err(|source| PullRequestDiffError::GitIo {
@@ -667,8 +693,13 @@ fn repo_cache_dir(pull: &PullRequestSummary) -> Result<PathBuf> {
         .join(&pull.repo))
 }
 
-async fn run_git(args: &[&str], cwd: Option<&Path>, context: &'static str) -> Result<()> {
-    let mut command = Command::new("git");
+async fn run_git(
+    args: &[&str],
+    cwd: Option<&Path>,
+    context: &'static str,
+    git_auth: Option<&str>,
+) -> Result<()> {
+    let mut command = git_command(git_auth);
     command.args(args);
     if let Some(path) = cwd {
         command.current_dir(path);
@@ -688,6 +719,51 @@ async fn run_git(args: &[&str], cwd: Option<&Path>, context: &'static str) -> Re
         status: output.status.code().unwrap_or(-1),
         stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
     })
+}
+
+fn git_command(git_auth: Option<&str>) -> Command {
+    let mut command = Command::new("git");
+    command
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GCM_INTERACTIVE", "never")
+        .stdin(Stdio::null());
+
+    if let Some(extra_header) = git_auth {
+        command.arg("-c").arg(format!(
+            "http.https://github.com/.extraheader={extra_header}"
+        ));
+    }
+
+    command
+}
+
+async fn build_git_auth_header() -> Option<String> {
+    let token = gh_auth_token().await.ok()?;
+    let credential = format!("x-access-token:{}", token.expose_secret());
+    let encoded = base64_encode(credential.as_bytes());
+    Some(format!("AUTHORIZATION: basic {encoded}"))
+}
+
+fn base64_encode(input: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity(input.len().div_ceil(3) * 4);
+    let mut index = 0usize;
+
+    while index < input.len() {
+        let a = input[index];
+        let b = input.get(index + 1).copied();
+        let c = input.get(index + 2).copied();
+
+        let n = (u32::from(a) << 16) | (u32::from(b.unwrap_or(0)) << 8) | u32::from(c.unwrap_or(0));
+        output.push(TABLE[((n >> 18) & 0x3f) as usize] as char);
+        output.push(TABLE[((n >> 12) & 0x3f) as usize] as char);
+        output.push(b.map_or('=', |_| TABLE[((n >> 6) & 0x3f) as usize] as char));
+        output.push(c.map_or('=', |_| TABLE[(n & 0x3f) as usize] as char));
+
+        index += 3;
+    }
+
+    output
 }
 
 #[cfg(test)]

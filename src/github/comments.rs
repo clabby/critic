@@ -4,25 +4,51 @@ use crate::domain::{
     IssueComment, PullRequestComment, PullRequestData, PullRequestSummary, PullReviewSummary,
     ReviewComment, ReviewThread,
 };
+use crate::github::errors::format_octocrab_error;
 use octocrab::models::{CommentId, pulls};
 use serde::Deserialize;
+use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
 /// Result type for pull request comment loading.
 pub type Result<T> = std::result::Result<T, PullRequestCommentsError>;
 
+/// Inline review comment payload staged before review submission.
+#[derive(Debug, Clone)]
+pub struct SubmitReviewComment {
+    pub path: String,
+    pub body: String,
+    pub line: u64,
+    pub side: pulls::Side,
+    pub start_line: Option<u64>,
+    pub start_side: Option<pulls::Side>,
+}
+
 /// Errors for pull request comment loading and transformation.
 #[derive(Debug, Error)]
 pub enum PullRequestCommentsError {
     #[error("GitHub API request failed: {0}")]
-    Octocrab(#[from] octocrab::Error),
+    Octocrab(String),
     #[error("graphql response error: {0}")]
     GraphQlResponseError(String),
+    #[error(
+        "pull request was updated since last refresh (loaded {loaded_head_sha}, current {current_head_sha}); refresh before submitting"
+    )]
+    PullRequestUpdated {
+        loaded_head_sha: String,
+        current_head_sha: String,
+    },
     #[error("unsupported review event: {0}")]
     InvalidReviewEvent(String),
     #[error("review event {event} produced unexpected state {state}")]
     UnexpectedReviewState { event: String, state: String },
+}
+
+impl From<octocrab::Error> for PullRequestCommentsError {
+    fn from(error: octocrab::Error) -> Self {
+        Self::Octocrab(format_octocrab_error(error))
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -121,11 +147,18 @@ pub async fn fetch_pull_request_data(
     client: &octocrab::Octocrab,
     pull: &PullRequestSummary,
 ) -> Result<PullRequestData> {
-    let (changed_files_set, review_threads, issue_comments, review_summaries) = tokio::try_join!(
+    let (changed_files_set, review_threads, issue_comments, review_summaries, pull_state) = tokio::try_join!(
         pull_request_file_paths(client, &pull.owner, &pull.repo, pull.number),
         list_review_comment_threads(client, &pull.owner, &pull.repo, pull.number),
         list_issue_comments(client, &pull.owner, &pull.repo, pull.number),
         list_pull_review_summary_comments(client, &pull.owner, &pull.repo, pull.number),
+        async {
+            client
+                .pulls(&pull.owner, &pull.repo)
+                .get(pull.number)
+                .await
+                .map_err(PullRequestCommentsError::from)
+        },
     )?;
 
     let mut changed_files: Vec<String> = changed_files_set.into_iter().collect();
@@ -162,10 +195,10 @@ pub async fn fetch_pull_request_data(
         owner: pull.owner.clone(),
         repo: pull.repo.clone(),
         pull_number: pull.number,
-        head_ref: pull.head_ref.clone(),
-        base_ref: pull.base_ref.clone(),
-        head_sha: pull.head_sha.clone(),
-        base_sha: pull.base_sha.clone(),
+        head_ref: pull_state.head.ref_field,
+        base_ref: pull_state.base.ref_field,
+        head_sha: pull_state.head.sha,
+        base_sha: pull_state.base.sha,
         changed_files,
         comments: merged.into_iter().map(|(_, entry)| entry).collect(),
     })
@@ -243,9 +276,13 @@ pub async fn submit_pull_request_review(
     pull_number: u64,
     event: &str,
     body: &str,
+    comments: &[SubmitReviewComment],
+    expected_head_sha: &str,
 ) -> Result<()> {
     let event = match event {
-        "COMMENT" | "APPROVE" | "REQUEST_CHANGES" => event,
+        "COMMENT" => pulls::ReviewAction::Comment,
+        "APPROVE" => pulls::ReviewAction::Approve,
+        "REQUEST_CHANGES" => pulls::ReviewAction::RequestChanges,
         other => {
             return Err(PullRequestCommentsError::InvalidReviewEvent(
                 other.to_owned(),
@@ -254,22 +291,34 @@ pub async fn submit_pull_request_review(
     };
 
     let pull = client.pulls(owner, repo).get(pull_number).await?;
+    if pull.head.sha != expected_head_sha {
+        return Err(PullRequestCommentsError::PullRequestUpdated {
+            loaded_head_sha: expected_head_sha.to_owned(),
+            current_head_sha: pull.head.sha,
+        });
+    }
+
     let route = format!("/repos/{owner}/{repo}/pulls/{pull_number}/reviews");
+    let comments = comments
+        .iter()
+        .map(SubmitReviewCommentRequest::from)
+        .collect::<Vec<_>>();
     let review: pulls::Review = client
         .post(
             route,
             Some(&serde_json::json!({
                 "body": body,
                 "event": event,
-                "commit_id": pull.head.sha,
+                "commit_id": expected_head_sha,
+                "comments": comments,
             })),
         )
         .await?;
 
     let expected_state = match event {
-        "COMMENT" => Some(pulls::ReviewState::Commented),
-        "APPROVE" => Some(pulls::ReviewState::Approved),
-        "REQUEST_CHANGES" => Some(pulls::ReviewState::ChangesRequested),
+        pulls::ReviewAction::Comment => Some(pulls::ReviewState::Commented),
+        pulls::ReviewAction::Approve => Some(pulls::ReviewState::Approved),
+        pulls::ReviewAction::RequestChanges => Some(pulls::ReviewState::ChangesRequested),
         _ => None,
     };
 
@@ -277,12 +326,37 @@ pub async fn submit_pull_request_review(
         && review.state != Some(expected)
     {
         return Err(PullRequestCommentsError::UnexpectedReviewState {
-            event: event.to_owned(),
+            event: format!("{event:?}"),
             state: format!("{:?}", review.state),
         });
     }
 
     Ok(())
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SubmitReviewCommentRequest {
+    path: String,
+    body: String,
+    line: u64,
+    side: pulls::Side,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    start_line: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    start_side: Option<pulls::Side>,
+}
+
+impl From<&SubmitReviewComment> for SubmitReviewCommentRequest {
+    fn from(value: &SubmitReviewComment) -> Self {
+        Self {
+            path: value.path.clone(),
+            body: value.body.clone(),
+            line: value.line,
+            side: value.side,
+            start_line: value.start_line,
+            start_side: value.start_side,
+        }
+    }
 }
 
 async fn list_review_comment_threads(

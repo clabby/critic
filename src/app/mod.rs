@@ -1,18 +1,21 @@
 //! Application runtime, event loop, and keyboard handling.
 
 pub mod browser;
+pub mod drafts;
 pub mod editor;
 pub mod events;
 pub mod state;
 
+use crate::app::drafts::{DraftStore, LoadOutcome};
 use crate::app::events::{
     MutationRequest, WorkerMessage, spawn_apply_mutation, spawn_load_pull_request_data,
     spawn_load_pull_request_diff, spawn_load_pull_requests, spawn_load_specific_pull_request,
 };
-use crate::app::state::{AppState, ReviewSubmissionEvent, ReviewTab};
+use crate::app::state::{AppState, PendingReviewCommentSide, ReviewSubmissionEvent, ReviewTab};
 use crate::config;
 use crate::domain::{CommentRef, PullRequestSummary, Route};
 use crate::github::client::create_client;
+use crate::github::comments::SubmitReviewComment;
 use crate::render::markdown::MarkdownRenderer;
 use crate::ui;
 use crate::ui::theme::{self, ThemeMode};
@@ -20,12 +23,13 @@ use anyhow::Context;
 use browser::open_in_browser;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-    MouseEvent, MouseEventKind,
+    KeyModifiers, MouseEvent, MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
+use octocrab::models::pulls;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use std::io::{Stdout, stdout};
@@ -56,6 +60,13 @@ pub async fn run(config: AppConfig) -> anyhow::Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<WorkerMessage>();
 
     let mut state = AppState::default();
+    let draft_store = match DraftStore::new() {
+        Ok(store) => Some(store),
+        Err(err) => {
+            state.error_message = Some(format!("draft persistence unavailable: {err}"));
+            None
+        }
+    };
 
     let client = create_client()
         .await
@@ -98,6 +109,7 @@ pub async fn run(config: AppConfig) -> anyhow::Result<()> {
         &tx,
         &mut rx,
         &mut markdown,
+        draft_store.as_ref(),
     )
     .await;
 
@@ -113,18 +125,46 @@ async fn run_event_loop(
     tx: &WorkerTx,
     rx: &mut UnboundedReceiver<WorkerMessage>,
     markdown: &mut MarkdownRenderer,
+    draft_store: Option<&DraftStore>,
 ) -> anyhow::Result<()> {
     let mut active_theme_mode = config.initial_theme_mode;
     let mut active_terminal_background = config.initial_terminal_background;
     let mut last_theme_poll = Instant::now();
     let mut last_user_input = Instant::now();
+    let mut last_error_snapshot: Option<String> = None;
+    let mut last_error_at: Option<Instant> = None;
+    let mut last_persisted_draft_signature: Option<String> = None;
 
     loop {
         state.advance_spinner();
 
         while let Ok(message) = rx.try_recv() {
-            process_worker_message(state, message, markdown, context, tx);
+            process_worker_message(
+                state,
+                message,
+                markdown,
+                context,
+                tx,
+                draft_store,
+                &mut last_persisted_draft_signature,
+            );
             maybe_spawn_search_load(state, context, tx);
+            load_active_diff_if_needed(state, tx);
+            if let Some(store) = draft_store {
+                // Persist immediately after worker-driven mutations (for example submit review).
+                persist_review_drafts(state, store, &mut last_persisted_draft_signature);
+            }
+        }
+
+        if state.error_message != last_error_snapshot {
+            last_error_snapshot = state.error_message.clone();
+            last_error_at = state.error_message.as_ref().map(|_| Instant::now());
+        } else if state.error_message.is_some()
+            && last_error_at.is_some_and(|seen_at| seen_at.elapsed() >= Duration::from_secs(10))
+        {
+            state.error_message = None;
+            last_error_snapshot = None;
+            last_error_at = None;
         }
 
         if last_theme_poll.elapsed() >= Duration::from_secs(1) {
@@ -136,6 +176,10 @@ async fn run_event_loop(
                 &mut active_terminal_background,
                 last_user_input.elapsed(),
             );
+        }
+
+        if let Some(store) = draft_store {
+            persist_review_drafts(state, store, &mut last_persisted_draft_signature);
         }
 
         terminal.draw(|frame| ui::render(frame, state, markdown))?;
@@ -150,6 +194,10 @@ async fn run_event_loop(
                     if key_event.kind == KeyEventKind::Press {
                         last_user_input = Instant::now();
                         handle_key_event(terminal, state, context, tx, key_event);
+                        if let Some(store) = draft_store {
+                            // Persist immediately after key-driven mutations (create/edit/delete).
+                            persist_review_drafts(state, store, &mut last_persisted_draft_signature);
+                        }
                     }
                 }
                 Event::Mouse(mouse_event) => {
@@ -170,6 +218,8 @@ fn process_worker_message(
     markdown: &mut MarkdownRenderer,
     context: &DataContext,
     tx: &WorkerTx,
+    draft_store: Option<&DraftStore>,
+    last_persisted_draft_signature: &mut Option<String>,
 ) {
     match message {
         WorkerMessage::PullRequestsLoaded {
@@ -205,12 +255,36 @@ fn process_worker_message(
                         && review.pull.repo == pull.repo
                     {
                         review.clear_diff();
-                        review.set_data(data);
+                        let head_changed = review.set_data(data);
+                        if head_changed && review.pending_review_comment_count() > 0 {
+                            state.error_message = Some(format!(
+                                "pull request changed upstream; {} pending inline comment(s) may now be outdated",
+                                review.pending_review_comment_count()
+                            ));
+                        }
+                        *last_persisted_draft_signature = None;
                         state.route = Route::Review;
                         return;
                     }
 
                     state.open_review(pull, data);
+                    if let (Some(store), Some(review)) = (draft_store, state.review.as_mut()) {
+                        match store.load_for_review(review) {
+                            Ok(LoadOutcome::Loaded {
+                                pending_comments,
+                                reply_drafts,
+                                saved_head_sha: _,
+                            }) => {
+                                review.apply_restored_drafts(pending_comments, reply_drafts);
+                            }
+                            Ok(LoadOutcome::None) => {}
+                            Err(err) => {
+                                state.error_message =
+                                    Some(format!("failed to load saved draft: {err}"));
+                            }
+                        }
+                    }
+                    *last_persisted_draft_signature = None;
                 }
                 Err(error) => {
                     state.error_message = Some(error);
@@ -264,6 +338,7 @@ fn process_worker_message(
         WorkerMessage::MutationApplied {
             pull,
             clear_reply_root_key,
+            clear_pending_review_comments,
             result,
         } => {
             state.end_operation();
@@ -280,6 +355,9 @@ fn process_worker_message(
                         if let Some(root_key) = clear_reply_root_key {
                             review.clear_reply_draft(&root_key);
                         }
+                        if clear_pending_review_comments {
+                            review.clear_pending_review_comments();
+                        }
                         review.set_data(data);
                         state.route = Route::Review;
                     }
@@ -290,6 +368,44 @@ fn process_worker_message(
             }
         }
     }
+}
+
+fn persist_review_drafts(
+    state: &mut AppState,
+    draft_store: &DraftStore,
+    last_persisted_draft_signature: &mut Option<String>,
+) {
+    let Some(review) = state.review.as_ref() else {
+        *last_persisted_draft_signature = None;
+        return;
+    };
+
+    let has_pending = review.pending_review_comment_count() > 0;
+    let has_replies = review
+        .reply_drafts
+        .values()
+        .any(|body| !body.trim().is_empty());
+    if !has_pending && !has_replies {
+        if last_persisted_draft_signature.is_some() {
+            if let Err(err) = draft_store.clear_for_review(review) {
+                state.error_message = Some(format!("failed to clear saved draft: {err}"));
+            }
+            *last_persisted_draft_signature = None;
+        }
+        return;
+    }
+
+    let signature = DraftStore::draft_signature(review);
+    if last_persisted_draft_signature.as_deref() == Some(signature.as_str()) {
+        return;
+    }
+
+    if let Err(err) = draft_store.save_for_review(review) {
+        state.error_message = Some(format!("failed to save draft: {err}"));
+        return;
+    }
+
+    *last_persisted_draft_signature = Some(signature);
 }
 
 fn maybe_refresh_theme(
@@ -472,6 +588,11 @@ fn handle_review_key_event(
         .as_ref()
         .map(|review| review.active_tab())
         .unwrap_or(ReviewTab::Threads);
+    let is_visual_mode = active_tab == ReviewTab::Diff
+        && state
+            .review
+            .as_ref()
+            .is_some_and(|review| review.has_diff_selection_anchor());
 
     if active_tab == ReviewTab::Diff
         && state
@@ -494,23 +615,72 @@ fn handle_review_key_event(
         return;
     }
 
+    if active_tab == ReviewTab::Diff && key.modifiers.contains(KeyModifiers::CONTROL) {
+        match key.code {
+            KeyCode::Char('d') => {
+                if let Some(review) = state.review.as_mut() {
+                    review.fast_scroll_down();
+                }
+                return;
+            }
+            KeyCode::Char('u') => {
+                if let Some(review) = state.review.as_mut() {
+                    review.fast_scroll_up();
+                }
+                return;
+            }
+            _ => {}
+        }
+    }
+
+    if active_tab == ReviewTab::Diff
+        && key.code == KeyCode::Esc
+        && let Some(review) = state.review.as_mut()
+        && review.has_diff_selection_anchor()
+    {
+        review.clear_diff_selection_anchor();
+        state.error_message = None;
+        return;
+    }
+
     match key.code {
         KeyCode::Char('q') => {
             state.should_quit = true;
         }
-        KeyCode::Char('b') | KeyCode::Esc => {
+        KeyCode::Char('b') => {
+            if is_visual_mode {
+                return;
+            }
+            state.back_to_search();
+            maybe_spawn_search_load(state, context, tx);
+        }
+        KeyCode::Esc => {
             state.back_to_search();
             maybe_spawn_search_load(state, context, tx);
         }
         KeyCode::Tab => {
-            if let Some(review) = state.review.as_mut() {
-                review.next_tab();
+            if is_visual_mode {
+                return;
             }
-            load_active_diff_if_needed(state, tx);
+            if let Some(review) = state.review.as_mut() {
+                if review.active_tab() == ReviewTab::Diff {
+                    if review.is_diff_content_focused() {
+                        review.focus_diff_files();
+                    } else {
+                        review.focus_diff_content();
+                    }
+                }
+            }
         }
         KeyCode::BackTab => {
+            if is_visual_mode {
+                return;
+            }
             if let Some(review) = state.review.as_mut() {
-                review.prev_tab();
+                review.next_tab();
+                if review.active_tab() == ReviewTab::Diff {
+                    review.focus_diff_files();
+                }
             }
             load_active_diff_if_needed(state, tx);
         }
@@ -529,20 +699,6 @@ fn handle_review_key_event(
                 review.move_up();
             }
         }
-        KeyCode::PageDown => {
-            if let Some(review) = state.review.as_mut() {
-                for _ in 0..8 {
-                    review.scroll_preview_down();
-                }
-            }
-        }
-        KeyCode::PageUp => {
-            if let Some(review) = state.review.as_mut() {
-                for _ in 0..8 {
-                    review.scroll_preview_up();
-                }
-            }
-        }
         KeyCode::Char('o') | KeyCode::Char('z') => {
             if let Some(review) = state.review.as_mut() {
                 if active_tab == ReviewTab::Threads {
@@ -554,16 +710,46 @@ fn handle_review_key_event(
         }
         KeyCode::Char('n') | KeyCode::Char(']') => {
             if active_tab == ReviewTab::Diff
+                && !is_visual_mode
                 && let Some(review) = state.review.as_mut()
             {
+                review.focus_diff_content();
                 review.jump_next_hunk();
             }
         }
         KeyCode::Char('N') | KeyCode::Char('[') => {
             if active_tab == ReviewTab::Diff
+                && !is_visual_mode
                 && let Some(review) = state.review.as_mut()
             {
+                review.focus_diff_content();
                 review.jump_prev_hunk();
+            }
+        }
+        KeyCode::Char('p') => {
+            if active_tab == ReviewTab::Diff
+                && !is_visual_mode
+                && let Some(review) = state.review.as_mut()
+            {
+                review.focus_diff_content();
+                if review.jump_next_pending_review_comment() {
+                    state.error_message = None;
+                } else {
+                    state.error_message = Some("no pending inline comments".to_owned());
+                }
+            }
+        }
+        KeyCode::Char('P') => {
+            if active_tab == ReviewTab::Diff
+                && !is_visual_mode
+                && let Some(review) = state.review.as_mut()
+            {
+                review.focus_diff_content();
+                if review.jump_prev_pending_review_comment() {
+                    state.error_message = None;
+                } else {
+                    state.error_message = Some("no pending inline comments".to_owned());
+                }
             }
         }
         KeyCode::Char('f') => {
@@ -574,15 +760,10 @@ fn handle_review_key_event(
             }
         }
         KeyCode::Char('R') => {
-            if state.is_busy() {
+            if is_visual_mode {
                 return;
             }
-
-            if active_tab == ReviewTab::Diff {
-                if let Some(review) = state.review.as_mut() {
-                    review.clear_diff();
-                }
-                load_active_diff_if_needed(state, tx);
+            if state.is_busy() {
                 return;
             }
 
@@ -638,6 +819,8 @@ fn handle_review_key_event(
         KeyCode::Char('e') => {
             if active_tab == ReviewTab::Threads {
                 open_reply_editor(terminal, state);
+            } else if active_tab == ReviewTab::Diff {
+                open_pending_diff_comment_editor(terminal, state);
             }
         }
         KeyCode::Char('x') => {
@@ -646,47 +829,78 @@ fn handle_review_key_event(
                 && let Some(context) = review.selected_thread_context()
             {
                 review.clear_reply_draft(&context.root_key);
+            } else if active_tab == ReviewTab::Diff && !is_visual_mode {
+                clear_selected_pending_diff_comment(state);
             }
         }
         KeyCode::Char('s') => match active_tab {
             ReviewTab::Threads => send_selected_reply(state, context, tx),
             ReviewTab::Diff => {
-                if let Some(review) = state.review.as_mut() {
+                if let Some(review) = state.review.as_mut()
+                    && !review.is_diff_content_focused()
+                    && !review.has_diff_selection_anchor()
+                {
                     review.focus_diff_search();
                 }
             }
         },
         KeyCode::Char('C') => {
-            if active_tab == ReviewTab::Threads {
-                open_submit_review_editor_and_submit(
-                    terminal,
-                    state,
-                    context,
-                    tx,
-                    ReviewSubmissionEvent::Comment,
-                );
+            if is_visual_mode {
+                return;
             }
+            open_submit_review_editor_and_submit(
+                terminal,
+                state,
+                context,
+                tx,
+                ReviewSubmissionEvent::Comment,
+            );
         }
         KeyCode::Char('A') => {
-            if active_tab == ReviewTab::Threads {
-                open_submit_review_editor_and_submit(
-                    terminal,
-                    state,
-                    context,
-                    tx,
-                    ReviewSubmissionEvent::Approve,
-                );
+            if is_visual_mode {
+                return;
             }
+            open_submit_review_editor_and_submit(
+                terminal,
+                state,
+                context,
+                tx,
+                ReviewSubmissionEvent::Approve,
+            );
         }
         KeyCode::Char('X') => {
-            if active_tab == ReviewTab::Threads {
-                open_submit_review_editor_and_submit(
-                    terminal,
-                    state,
-                    context,
-                    tx,
-                    ReviewSubmissionEvent::RequestChanges,
-                );
+            if is_visual_mode {
+                return;
+            }
+            open_submit_review_editor_and_submit(
+                terminal,
+                state,
+                context,
+                tx,
+                ReviewSubmissionEvent::RequestChanges,
+            );
+        }
+        KeyCode::Char('v') => {
+            if active_tab == ReviewTab::Diff
+                && let Some(review) = state.review.as_mut()
+                && review.is_diff_content_focused()
+            {
+                if !review.has_diff_selection_anchor()
+                    && review.selected_pending_review_comment().is_some()
+                {
+                    state.error_message = Some(
+                        "cannot start visual selection on existing pending comment".to_owned(),
+                    );
+                    return;
+                }
+                let had_anchor = review.has_diff_selection_anchor();
+                review.toggle_diff_selection_anchor();
+                if !had_anchor && !review.has_diff_selection_anchor() {
+                    state.error_message =
+                        Some("visual selection only works on changed diff lines".to_owned());
+                } else {
+                    state.error_message = None;
+                }
             }
         }
         _ => {}
@@ -762,6 +976,54 @@ fn open_reply_editor(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &
     }
 }
 
+fn open_pending_diff_comment_editor(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    state: &mut AppState,
+) {
+    if state.is_busy() {
+        return;
+    }
+
+    let Some(review) = state.review.as_mut() else {
+        return;
+    };
+    if !review.is_diff_content_focused() {
+        state.error_message = Some("press [l] to focus diff lines before commenting".to_owned());
+        return;
+    }
+
+    let existing = review
+        .selected_pending_review_comment()
+        .map(|comment| comment.body.clone())
+        .unwrap_or_default();
+
+    match editor::edit_with_system_editor(&existing, terminal) {
+        Ok(Some(edited)) => match review.upsert_pending_review_comment_from_selection(edited) {
+            Ok(()) => state.error_message = None,
+            Err(message) => state.error_message = Some(message.to_owned()),
+        },
+        Ok(None) => {}
+        Err(err) => {
+            state.error_message = Some(format!("failed to open editor: {err}"));
+        }
+    }
+}
+
+fn clear_selected_pending_diff_comment(state: &mut AppState) {
+    let Some(review) = state.review.as_mut() else {
+        return;
+    };
+    if !review.is_diff_content_focused() {
+        return;
+    }
+
+    if !review.remove_selected_pending_review_comment() {
+        state.error_message = Some("no pending comment on selected line".to_owned());
+        return;
+    }
+    state.error_message = None;
+}
+
 fn send_selected_reply(state: &mut AppState, context: &DataContext, tx: &WorkerTx) {
     if state.is_busy() {
         return;
@@ -818,6 +1080,20 @@ fn open_submit_review_editor_and_submit(
     };
 
     let pull = review.pull.clone();
+    let pending_comments = review
+        .pending_review_comments()
+        .iter()
+        .map(|comment| SubmitReviewComment {
+            path: comment.path.clone(),
+            body: comment.body.clone(),
+            line: comment.line,
+            side: pending_comment_side_to_octocrab(comment.side),
+            start_line: comment.start_line,
+            start_side: comment
+                .start_line
+                .map(|_| pending_comment_side_to_octocrab(comment.side)),
+        })
+        .collect::<Vec<_>>();
     let initial = String::new();
 
     let body = match editor::edit_with_system_editor(&initial, terminal) {
@@ -828,6 +1104,11 @@ fn open_submit_review_editor_and_submit(
             return;
         }
     };
+
+    if body.is_empty() && pending_comments.is_empty() {
+        state.error_message = Some("review is empty; add text or stage inline comments".to_owned());
+        return;
+    }
 
     execute_mutation(
         state,
@@ -840,10 +1121,19 @@ fn open_submit_review_editor_and_submit(
             pull_number: pull.number,
             event: event.as_api_event().to_owned(),
             body,
+            comments: pending_comments,
+            expected_head_sha: pull.head_sha.clone(),
         },
         None,
         event.title(),
     );
+}
+
+fn pending_comment_side_to_octocrab(side: PendingReviewCommentSide) -> pulls::Side {
+    match side {
+        PendingReviewCommentSide::Left => pulls::Side::Left,
+        PendingReviewCommentSide::Right => pulls::Side::Right,
+    }
 }
 
 fn execute_mutation(

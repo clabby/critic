@@ -1,6 +1,7 @@
 //! Open pull request discovery and mapping for the search screen.
 
 use crate::domain::{PullRequestReviewStatus, PullRequestSummary};
+use crate::github::errors::format_octocrab_error;
 use serde::Deserialize;
 use std::collections::HashMap;
 use thiserror::Error;
@@ -20,8 +21,38 @@ pub enum PullRequestQueryError {
     GhRepoViewFailed { status: i32, stderr: String },
     #[error("failed to parse `gh repo view` output: {0}")]
     GhRepoViewInvalidJson(serde_json::Error),
-    #[error("GitHub API request failed: {0}")]
-    Octocrab(#[from] octocrab::Error),
+    #[error("GitHub API request failed: {message}")]
+    Octocrab {
+        message: String,
+        status_code: Option<u16>,
+    },
+}
+
+impl From<octocrab::Error> for PullRequestQueryError {
+    fn from(error: octocrab::Error) -> Self {
+        let status_code = match &error {
+            octocrab::Error::GitHub { source, .. } => Some(source.status_code.as_u16()),
+            _ => None,
+        };
+
+        Self::Octocrab {
+            message: format_octocrab_error(error),
+            status_code,
+        }
+    }
+}
+
+impl PullRequestQueryError {
+    /// Returns true when the query failed because the resource was not found.
+    pub fn is_not_found(&self) -> bool {
+        matches!(
+            self,
+            Self::Octocrab {
+                status_code: Some(404),
+                ..
+            }
+        )
+    }
 }
 
 /// Repository identity used for pull request listing.
