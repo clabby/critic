@@ -21,6 +21,14 @@ This file defines engineering practices for contributors and coding agents worki
 - Avoid large monolithic modules when behavior can be isolated.
 - Keep data models in `src/domain/*` stable and explicit.
 
+## Dependency-first policy
+
+- Prefer existing dependency types and components before building custom equivalents.
+- Re-use `octocrab` models for GitHub API payloads whenever possible instead of defining mirror structs.
+- Re-use `ratatui` widgets/components for layout, scrolling, gauges, and related UI behavior before custom drawing.
+- Add custom wrappers only when a dependency does not expose what we need, and keep that wrapper minimal.
+- Treat custom replacements as a last resort because they increase fragility and maintenance burden.
+
 ## Async and UX rules
 
 - Never block the UI loop on network work.
@@ -44,7 +52,6 @@ This file defines engineering practices for contributors and coding agents worki
 ### Interactive verification
 
 - Live mode: `cargo run`
-- Demo mode: `cargo run -- --demo`
 
 ### Harness verification (feature-gated)
 

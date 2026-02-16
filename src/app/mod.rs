@@ -1,5 +1,7 @@
 //! Application runtime, event loop, and keyboard handling.
 
+pub mod browser;
+pub mod editor;
 pub mod events;
 pub mod state;
 
@@ -7,16 +9,17 @@ use crate::app::events::{
     MutationRequest, WorkerMessage, spawn_apply_mutation, spawn_load_pull_request_data,
     spawn_load_pull_requests,
 };
-use crate::app::state::{AppState, InputAction, InputState, ReviewSubmissionEvent};
+use crate::app::state::{AppState, ReviewSubmissionEvent};
+use crate::domain::CommentRef;
 use crate::domain::Route;
-#[cfg(feature = "harness")]
-use crate::fixtures;
 use crate::github::client::create_client;
 use crate::render::markdown::MarkdownRenderer;
 use crate::ui;
 use anyhow::Context;
+use browser::open_in_browser;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+    MouseEvent, MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -33,18 +36,12 @@ use tokio::sync::mpsc::{self, UnboundedReceiver};
 pub struct AppConfig {
     pub owner: Option<String>,
     pub repo: Option<String>,
-    #[cfg(feature = "harness")]
-    pub demo: bool,
 }
 
-enum DataMode {
-    #[cfg(feature = "harness")]
-    Demo,
-    Live {
-        client: octocrab::Octocrab,
-        owner: Option<String>,
-        repo: Option<String>,
-    },
+struct DataContext {
+    client: octocrab::Octocrab,
+    owner: Option<String>,
+    repo: Option<String>,
 }
 
 /// Runs the interactive TUI application.
@@ -52,54 +49,23 @@ pub async fn run(config: AppConfig) -> anyhow::Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<WorkerMessage>();
 
     let mut state = AppState::default();
-    let mode = {
-        #[cfg(feature = "harness")]
-        {
-            if config.demo {
-                initialize_demo_state(&mut state);
-                DataMode::Demo
-            } else {
-                state.begin_operation("Loading open pull requests");
+    state.begin_operation("Loading open pull requests");
 
-                let client = create_client()
-                    .await
-                    .context("failed to create authenticated GitHub client")?;
+    let client = create_client()
+        .await
+        .context("failed to create authenticated GitHub client")?;
 
-                spawn_load_pull_requests(
-                    tx.clone(),
-                    client.clone(),
-                    config.owner.clone(),
-                    config.repo.clone(),
-                );
+    spawn_load_pull_requests(
+        tx.clone(),
+        client.clone(),
+        config.owner.clone(),
+        config.repo.clone(),
+    );
 
-                DataMode::Live {
-                    client,
-                    owner: config.owner,
-                    repo: config.repo,
-                }
-            }
-        }
-        #[cfg(not(feature = "harness"))]
-        {
-            state.begin_operation("Loading open pull requests");
-
-            let client = create_client()
-                .await
-                .context("failed to create authenticated GitHub client")?;
-
-            spawn_load_pull_requests(
-                tx.clone(),
-                client.clone(),
-                config.owner.clone(),
-                config.repo.clone(),
-            );
-
-            DataMode::Live {
-                client,
-                owner: config.owner,
-                repo: config.repo,
-            }
-        }
+    let context = DataContext {
+        client,
+        owner: config.owner,
+        repo: config.repo,
     };
 
     let mut terminal = setup_terminal()?;
@@ -108,7 +74,7 @@ pub async fn run(config: AppConfig) -> anyhow::Result<()> {
     let result = run_event_loop(
         &mut terminal,
         &mut state,
-        &mode,
+        &context,
         &tx,
         &mut rx,
         &mut markdown,
@@ -119,22 +85,10 @@ pub async fn run(config: AppConfig) -> anyhow::Result<()> {
     result
 }
 
-#[cfg(feature = "harness")]
-fn initialize_demo_state(state: &mut AppState) {
-    let pulls = fixtures::demo_pull_requests();
-    let label = pulls
-        .first()
-        .map(|pull| format!("{}/{}", pull.owner, pull.repo))
-        .unwrap_or_else(|| "demo/repository".to_owned());
-
-    state.set_repository_label(label);
-    state.set_pull_requests(pulls);
-}
-
 async fn run_event_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     state: &mut AppState,
-    mode: &DataMode,
+    context: &DataContext,
     tx: &tokio::sync::mpsc::UnboundedSender<WorkerMessage>,
     rx: &mut UnboundedReceiver<WorkerMessage>,
     markdown: &mut MarkdownRenderer,
@@ -153,10 +107,16 @@ async fn run_event_loop(
         }
 
         if event::poll(Duration::from_millis(60))? {
-            if let Event::Key(key_event) = event::read()? {
-                if key_event.kind == KeyEventKind::Press {
-                    handle_key_event(state, mode, tx, key_event);
+            match event::read()? {
+                Event::Key(key_event) => {
+                    if key_event.kind == KeyEventKind::Press {
+                        handle_key_event(terminal, state, context, tx, key_event);
+                    }
                 }
+                Event::Mouse(mouse_event) => {
+                    handle_mouse_event(state, mouse_event);
+                }
+                _ => {}
             }
         }
     }
@@ -240,115 +200,91 @@ fn process_worker_message(state: &mut AppState, message: WorkerMessage) {
 }
 
 fn handle_key_event(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     state: &mut AppState,
-    mode: &DataMode,
+    context: &DataContext,
     tx: &tokio::sync::mpsc::UnboundedSender<WorkerMessage>,
     key: KeyEvent,
 ) {
-    if state.input.is_some() {
-        handle_input_key_event(state, mode, tx, key);
-        return;
-    }
-
     match state.route {
-        Route::Search => handle_search_key_event(state, mode, tx, key),
-        Route::Review => handle_review_key_event(state, mode, tx, key),
+        Route::Search => handle_search_key_event(state, context, tx, key),
+        Route::Review => handle_review_key_event(terminal, state, context, tx, key),
     }
 }
 
-fn handle_input_key_event(
-    state: &mut AppState,
-    mode: &DataMode,
-    tx: &tokio::sync::mpsc::UnboundedSender<WorkerMessage>,
-    key: KeyEvent,
-) {
-    match key.code {
-        KeyCode::Esc => state.cancel_input(),
-        KeyCode::Backspace => {
-            if let Some(input) = state.input.as_mut() {
-                input.backspace();
+fn handle_mouse_event(state: &mut AppState, mouse: MouseEvent) {
+    if state.route != Route::Review {
+        return;
+    }
+
+    let Some(delta) = mouse_scroll_delta(mouse.kind) else {
+        return;
+    };
+
+    let Some(review) = state.review.as_mut() else {
+        return;
+    };
+
+    match delta {
+        MouseScrollDelta::Up(lines) => {
+            for _ in 0..lines {
+                review.scroll_preview_up();
             }
         }
-        KeyCode::Enter => {
-            let Some(input) = state.input.take() else {
-                return;
-            };
-
-            let body = input.trimmed();
-            match input.action {
-                InputAction::Reply {
-                    root_key,
-                    comment_id,
-                    pull,
-                } => {
-                    if body.is_empty() {
-                        state.error_message = Some("reply is empty".to_owned());
-                        return;
-                    }
-
-                    if let Some(review) = state.review.as_mut() {
-                        review.set_reply_draft(root_key.clone(), body.clone());
-                    }
-
-                    execute_mutation(
-                        state,
-                        mode,
-                        tx,
-                        pull.clone(),
-                        MutationRequest::ReplyToReviewComment {
-                            owner: pull.owner.clone(),
-                            repo: pull.repo.clone(),
-                            pull_number: pull.number,
-                            comment_id,
-                            body,
-                        },
-                        Some(root_key),
-                        "Posting reply",
-                    );
-                }
-                InputAction::SubmitReview { event, pull } => {
-                    execute_mutation(
-                        state,
-                        mode,
-                        tx,
-                        pull.clone(),
-                        MutationRequest::SubmitPullRequestReview {
-                            owner: pull.owner.clone(),
-                            repo: pull.repo.clone(),
-                            pull_number: pull.number,
-                            event: event.as_api_event().to_owned(),
-                            body,
-                        },
-                        None,
-                        event.title(),
-                    );
-                }
+        MouseScrollDelta::Down(lines) => {
+            for _ in 0..lines {
+                review.scroll_preview_down();
             }
         }
-        KeyCode::Char(ch) => {
-            if !ch.is_control() {
-                if let Some(input) = state.input.as_mut() {
-                    input.push_char(ch);
-                }
-            }
-        }
-        _ => {}
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum MouseScrollDelta {
+    Up(u16),
+    Down(u16),
+}
+
+fn mouse_scroll_delta(kind: MouseEventKind) -> Option<MouseScrollDelta> {
+    const STEP: u16 = 3;
+
+    match kind {
+        MouseEventKind::ScrollUp => Some(MouseScrollDelta::Up(STEP)),
+        MouseEventKind::ScrollDown => Some(MouseScrollDelta::Down(STEP)),
+        _ => None,
     }
 }
 
 fn handle_search_key_event(
     state: &mut AppState,
-    mode: &DataMode,
+    context: &DataContext,
     tx: &tokio::sync::mpsc::UnboundedSender<WorkerMessage>,
     key: KeyEvent,
 ) {
+    if state.is_search_focused() {
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter => state.unfocus_search(),
+            KeyCode::Backspace => state.search_backspace(),
+            KeyCode::Char(ch) => {
+                if !ch.is_control() {
+                    state.search_push_char(ch);
+                }
+            }
+            _ => {}
+        }
+        return;
+    }
+
     match key.code {
-        KeyCode::Char('q') | KeyCode::Esc => {
+        KeyCode::Char('q') => {
             state.should_quit = true;
         }
+        KeyCode::Char('W') => {
+            open_selected_pull_in_browser(state);
+        }
+        KeyCode::Char('s') => state.focus_search(),
         KeyCode::Down | KeyCode::Char('j') => state.search_move_down(),
         KeyCode::Up | KeyCode::Char('k') => state.search_move_up(),
-        KeyCode::Backspace => state.search_backspace(),
         KeyCode::Enter => {
             if state.is_busy() {
                 return;
@@ -361,56 +297,30 @@ fn handle_search_key_event(
             state.error_message = None;
             state.begin_operation(format!("Loading pull request #{}", pull.number));
 
-            match mode {
-                #[cfg(feature = "harness")]
-                DataMode::Demo => {
-                    state.end_operation();
-                    let data = fixtures::demo_pull_request_data_for(&pull);
-                    state.open_review(pull, data);
-                }
-                DataMode::Live { client, .. } => {
-                    spawn_load_pull_request_data(tx.clone(), client.clone(), pull);
-                }
-            }
+            spawn_load_pull_request_data(tx.clone(), context.client.clone(), pull);
         }
-        KeyCode::Char('r') => {
+        KeyCode::Char('R') => {
             if state.is_busy() {
                 return;
             }
 
-            match mode {
-                #[cfg(feature = "harness")]
-                DataMode::Demo => {
-                    initialize_demo_state(state);
-                }
-                DataMode::Live {
-                    client,
-                    owner,
-                    repo,
-                } => {
-                    state.error_message = None;
-                    state.begin_operation("Refreshing open pull requests");
-                    spawn_load_pull_requests(
-                        tx.clone(),
-                        client.clone(),
-                        owner.clone(),
-                        repo.clone(),
-                    );
-                }
-            }
-        }
-        KeyCode::Char(ch) => {
-            if !ch.is_control() {
-                state.search_push_char(ch);
-            }
+            state.error_message = None;
+            state.begin_operation("Refreshing open pull requests");
+            spawn_load_pull_requests(
+                tx.clone(),
+                context.client.clone(),
+                context.owner.clone(),
+                context.repo.clone(),
+            );
         }
         _ => {}
     }
 }
 
 fn handle_review_key_event(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     state: &mut AppState,
-    mode: &DataMode,
+    context: &DataContext,
     tx: &tokio::sync::mpsc::UnboundedSender<WorkerMessage>,
     key: KeyEvent,
 ) {
@@ -420,6 +330,9 @@ fn handle_review_key_event(
         }
         KeyCode::Char('b') | KeyCode::Esc => {
             state.back_to_search();
+        }
+        KeyCode::Char('W') => {
+            open_selected_comment_in_browser(state);
         }
         KeyCode::Down | KeyCode::Char('j') => {
             if let Some(review) = state.review.as_mut() {
@@ -455,7 +368,7 @@ fn handle_review_key_event(
                 review.toggle_resolved_filter();
             }
         }
-        KeyCode::Char('r') => {
+        KeyCode::Char('R') => {
             if state.is_busy() {
                 return;
             }
@@ -469,19 +382,7 @@ fn handle_review_key_event(
                 state.begin_operation(format!("Refreshing pull request #{}", pull.number));
             }
 
-            match mode {
-                #[cfg(feature = "harness")]
-                DataMode::Demo => {
-                    state.end_operation();
-                    let updated = fixtures::demo_pull_request_data_for(&pull);
-                    if let Some(review_mut) = state.review.as_mut() {
-                        review_mut.set_data(updated);
-                    }
-                }
-                DataMode::Live { client, .. } => {
-                    spawn_load_pull_request_data(tx.clone(), client.clone(), pull);
-                }
-            }
+            spawn_load_pull_request_data(tx.clone(), context.client.clone(), pull);
         }
         KeyCode::Char('t') => {
             if state.is_busy() {
@@ -491,18 +392,18 @@ fn handle_review_key_event(
             let Some(review) = state.review.as_ref() else {
                 return;
             };
-            let Some(context) = review.selected_thread_context() else {
+            let Some(thread_context) = review.selected_thread_context() else {
                 state.error_message = Some("select a review thread row".to_owned());
                 return;
             };
 
-            let Some(thread_id) = context.thread_id.clone() else {
+            let Some(thread_id) = thread_context.thread_id.clone() else {
                 state.error_message =
                     Some("thread cannot be resolved (missing thread id)".to_owned());
                 return;
             };
 
-            let resolved = !context.is_resolved;
+            let resolved = !thread_context.is_resolved;
             let operation = if resolved {
                 "Resolving thread"
             } else {
@@ -511,7 +412,7 @@ fn handle_review_key_event(
 
             execute_mutation(
                 state,
-                mode,
+                context,
                 tx,
                 review.pull.clone(),
                 MutationRequest::SetReviewThreadResolved {
@@ -523,7 +424,7 @@ fn handle_review_key_event(
             );
         }
         KeyCode::Char('e') => {
-            open_reply_editor(state);
+            open_reply_editor(terminal, state);
         }
         KeyCode::Char('x') => {
             if let Some(review) = state.review.as_mut() {
@@ -533,27 +434,45 @@ fn handle_review_key_event(
             }
         }
         KeyCode::Char('s') => {
-            send_selected_reply(state, mode, tx);
+            send_selected_reply(state, context, tx);
         }
         KeyCode::Char('C') => {
-            open_submit_review_input(state, ReviewSubmissionEvent::Comment);
+            open_submit_review_editor_and_submit(
+                terminal,
+                state,
+                context,
+                tx,
+                ReviewSubmissionEvent::Comment,
+            );
         }
         KeyCode::Char('A') => {
-            open_submit_review_input(state, ReviewSubmissionEvent::Approve);
+            open_submit_review_editor_and_submit(
+                terminal,
+                state,
+                context,
+                tx,
+                ReviewSubmissionEvent::Approve,
+            );
         }
         KeyCode::Char('X') => {
-            open_submit_review_input(state, ReviewSubmissionEvent::RequestChanges);
+            open_submit_review_editor_and_submit(
+                terminal,
+                state,
+                context,
+                tx,
+                ReviewSubmissionEvent::RequestChanges,
+            );
         }
         _ => {}
     }
 }
 
-fn open_reply_editor(state: &mut AppState) {
+fn open_reply_editor(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &mut AppState) {
     if state.is_busy() {
         return;
     }
 
-    let Some(review) = state.review.as_ref() else {
+    let Some(review) = state.review.as_mut() else {
         return;
     };
     let Some(context) = review.selected_thread_context() else {
@@ -566,21 +485,21 @@ fn open_reply_editor(state: &mut AppState) {
         .cloned()
         .unwrap_or_default();
 
-    state.begin_input(InputState {
-        title: "Reply to Thread".to_owned(),
-        prompt: "Reply body".to_owned(),
-        buffer: existing,
-        action: InputAction::Reply {
-            root_key: context.root_key,
-            comment_id: context.comment_id,
-            pull: review.pull.clone(),
-        },
-    });
+    match editor::edit_with_system_editor(&existing, terminal) {
+        Ok(Some(edited)) => {
+            review.set_reply_draft(context.root_key, edited);
+            state.error_message = None;
+        }
+        Ok(None) => {}
+        Err(err) => {
+            state.error_message = Some(format!("failed to open editor: {err}"));
+        }
+    }
 }
 
 fn send_selected_reply(
     state: &mut AppState,
-    mode: &DataMode,
+    context: &DataContext,
     tx: &tokio::sync::mpsc::UnboundedSender<WorkerMessage>,
 ) {
     if state.is_busy() {
@@ -590,13 +509,13 @@ fn send_selected_reply(
     let Some(review) = state.review.as_ref() else {
         return;
     };
-    let Some(context) = review.selected_thread_context() else {
+    let Some(thread_context) = review.selected_thread_context() else {
         return;
     };
 
     let body = review
         .reply_drafts
-        .get(&context.root_key)
+        .get(&thread_context.root_key)
         .map(|value| value.trim().to_owned())
         .unwrap_or_default();
 
@@ -607,22 +526,28 @@ fn send_selected_reply(
 
     execute_mutation(
         state,
-        mode,
+        context,
         tx,
         review.pull.clone(),
         MutationRequest::ReplyToReviewComment {
             owner: review.pull.owner.clone(),
             repo: review.pull.repo.clone(),
             pull_number: review.pull.number,
-            comment_id: context.comment_id,
+            comment_id: thread_context.comment_id,
             body,
         },
-        Some(context.root_key),
+        Some(thread_context.root_key),
         "Posting reply",
     );
 }
 
-fn open_submit_review_input(state: &mut AppState, event: ReviewSubmissionEvent) {
+fn open_submit_review_editor_and_submit(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    state: &mut AppState,
+    context: &DataContext,
+    tx: &tokio::sync::mpsc::UnboundedSender<WorkerMessage>,
+    event: ReviewSubmissionEvent,
+) {
     if state.is_busy() {
         return;
     }
@@ -631,20 +556,38 @@ fn open_submit_review_input(state: &mut AppState, event: ReviewSubmissionEvent) 
         return;
     };
 
-    state.begin_input(InputState {
-        title: event.title().to_owned(),
-        prompt: "Message (optional)".to_owned(),
-        buffer: String::new(),
-        action: InputAction::SubmitReview {
-            event,
-            pull: review.pull.clone(),
+    let pull = review.pull.clone();
+    let initial = String::new();
+
+    let body = match editor::edit_with_system_editor(&initial, terminal) {
+        Ok(Some(text)) => text.trim().to_owned(),
+        Ok(None) => return,
+        Err(err) => {
+            state.error_message = Some(format!("failed to open editor: {err}"));
+            return;
+        }
+    };
+
+    execute_mutation(
+        state,
+        context,
+        tx,
+        pull.clone(),
+        MutationRequest::SubmitPullRequestReview {
+            owner: pull.owner.clone(),
+            repo: pull.repo.clone(),
+            pull_number: pull.number,
+            event: event.as_api_event().to_owned(),
+            body,
         },
-    });
+        None,
+        event.title(),
+    );
 }
 
 fn execute_mutation(
     state: &mut AppState,
-    mode: &DataMode,
+    context: &DataContext,
     tx: &tokio::sync::mpsc::UnboundedSender<WorkerMessage>,
     pull: crate::domain::PullRequestSummary,
     mutation: MutationRequest,
@@ -654,20 +597,61 @@ fn execute_mutation(
     let operation_label = operation_label.into();
     state.error_message = None;
 
-    match mode {
-        #[cfg(feature = "harness")]
-        DataMode::Demo => {
-            state.error_message = Some("mutations are disabled in --demo mode".to_owned());
+    state.begin_operation(operation_label);
+    spawn_apply_mutation(
+        tx.clone(),
+        context.client.clone(),
+        pull,
+        mutation,
+        clear_reply_root_key,
+    );
+}
+
+fn open_selected_pull_in_browser(state: &mut AppState) {
+    let Some(pull) = state.selected_search_pull() else {
+        return;
+    };
+
+    let Some(url) = pull
+        .html_url
+        .as_deref()
+        .filter(|url| !url.trim().is_empty())
+    else {
+        state.error_message = Some("selected pull request has no web URL".to_owned());
+        return;
+    };
+
+    match open_in_browser(url) {
+        Ok(()) => state.error_message = None,
+        Err(err) => {
+            state.error_message = Some(format!("failed to open browser: {err}"));
         }
-        DataMode::Live { client, .. } => {
-            state.begin_operation(operation_label);
-            spawn_apply_mutation(
-                tx.clone(),
-                client.clone(),
-                pull,
-                mutation,
-                clear_reply_root_key,
-            );
+    }
+}
+
+fn open_selected_comment_in_browser(state: &mut AppState) {
+    let Some(review) = state.review.as_ref() else {
+        return;
+    };
+    let Some(node) = review.selected_node() else {
+        return;
+    };
+
+    let url = match &node.comment {
+        CommentRef::Review(comment) => comment.html_url.as_str(),
+        CommentRef::Issue(comment) => comment.html_url.as_str(),
+        CommentRef::ReviewSummary(review) => review.html_url.as_str(),
+    };
+
+    if url.trim().is_empty() {
+        state.error_message = Some("selected comment has no web URL".to_owned());
+        return;
+    }
+
+    match open_in_browser(url) {
+        Ok(()) => state.error_message = None,
+        Err(err) => {
+            state.error_message = Some(format!("failed to open browser: {err}"));
         }
     }
 }

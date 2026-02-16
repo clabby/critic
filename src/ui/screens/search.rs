@@ -17,21 +17,44 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 }
 
 fn render_search_box(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let focused = state.is_search_focused();
     let block = Block::default()
-        .title(Span::styled(" PR Search ", theme::title()))
+        .title(Span::styled(
+            if focused {
+                " PR Search [focused] "
+            } else {
+                " PR Search [s to focus] "
+            },
+            theme::title(),
+        ))
         .borders(Borders::ALL)
-        .border_style(theme::border());
+        .border_style(if focused {
+            theme::open_thread()
+        } else {
+            theme::border()
+        });
 
     let text = if state.search_query.is_empty() {
         vec![Line::from(vec![
             Span::raw("  query: "),
-            Span::styled("(type to filter open pull requests)", theme::dim()),
+            Span::styled(
+                if focused {
+                    "(type to filter open pull requests)"
+                } else {
+                    "(press [s] to focus search)"
+                },
+                theme::dim(),
+            ),
         ])]
     } else {
-        vec![Line::from(vec![
+        let mut line = vec![
             Span::raw("  query: "),
             Span::styled(state.search_query.clone(), Style::default()),
-        ])]
+        ];
+        if focused {
+            line.push(Span::styled(" |", theme::open_thread()));
+        }
+        vec![Line::from(line)]
     };
 
     frame.render_widget(Paragraph::new(text).block(block), area);

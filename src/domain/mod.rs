@@ -1,5 +1,6 @@
 //! Domain models shared across GitHub, search, and UI layers.
 
+use octocrab::models::{issues, pulls};
 use std::fmt;
 
 /// A lightweight pull request summary shown on the search screen.
@@ -32,33 +33,14 @@ impl PullRequestSummary {
     }
 }
 
-/// A pull request review comment from `/pulls/comments`.
-#[derive(Debug, Clone)]
-pub struct ReviewComment {
-    pub id: u64,
-    pub in_reply_to_id: Option<u64>,
-    pub body: String,
-    pub diff_hunk: Option<String>,
-    pub path: Option<String>,
-    pub line: Option<u64>,
-    pub start_line: Option<u64>,
-    pub original_line: Option<u64>,
-    pub original_start_line: Option<u64>,
-    pub side: Option<String>,
-    pub html_url: Option<String>,
-    pub created_at: String,
-    pub author: String,
-}
+/// A pull request review comment from GitHub API.
+pub type ReviewComment = pulls::Comment;
 
-/// An issue-style pull request comment from `/issues/comments`.
-#[derive(Debug, Clone)]
-pub struct IssueComment {
-    pub id: u64,
-    pub body: String,
-    pub html_url: Option<String>,
-    pub created_at: String,
-    pub author: String,
-}
+/// An issue-style pull request comment from GitHub API.
+pub type IssueComment = issues::Comment;
+
+/// A pull request review summary from GitHub API.
+pub type PullReviewSummary = pulls::Review;
 
 /// A hierarchical review thread rooted at a top-level review comment.
 #[derive(Debug, Clone)]
@@ -84,6 +66,7 @@ impl ReviewThread {
 pub enum PullRequestComment {
     ReviewThread(Box<ReviewThread>),
     IssueComment(Box<IssueComment>),
+    ReviewSummary(Box<PullReviewSummary>),
 }
 
 /// All review data required for the review screen.
@@ -129,6 +112,7 @@ pub enum ListNodeKind {
     Thread,
     Reply,
     Issue,
+    Review,
 }
 
 /// A flattened left-pane row for navigation/rendering.
@@ -148,59 +132,38 @@ pub struct ListNode {
 pub enum CommentRef {
     Review(ReviewComment),
     Issue(IssueComment),
+    ReviewSummary(PullReviewSummary),
 }
 
 impl CommentRef {
     pub fn author(&self) -> &str {
         match self {
-            Self::Review(comment) => &comment.author,
-            Self::Issue(comment) => &comment.author,
+            Self::Review(comment) => comment
+                .user
+                .as_ref()
+                .map(|user| user.login.as_str())
+                .unwrap_or("unknown"),
+            Self::Issue(comment) => comment.user.login.as_str(),
+            Self::ReviewSummary(review) => review
+                .user
+                .as_ref()
+                .map(|user| user.login.as_str())
+                .unwrap_or("unknown"),
         }
     }
 
     pub fn body(&self) -> &str {
         match self {
-            Self::Review(comment) => &comment.body,
-            Self::Issue(comment) => &comment.body,
-        }
-    }
-
-    pub fn html_url(&self) -> Option<&str> {
-        match self {
-            Self::Review(comment) => comment.html_url.as_deref(),
-            Self::Issue(comment) => comment.html_url.as_deref(),
-        }
-    }
-
-    pub fn path(&self) -> Option<&str> {
-        match self {
-            Self::Review(comment) => comment.path.as_deref(),
-            Self::Issue(_) => None,
-        }
-    }
-
-    pub fn line(&self) -> Option<u64> {
-        match self {
-            Self::Review(comment) => comment.line.or(comment.start_line),
-            Self::Issue(_) => None,
-        }
-    }
-
-    pub fn created_at(&self) -> &str {
-        match self {
-            Self::Review(comment) => &comment.created_at,
-            Self::Issue(comment) => &comment.created_at,
+            Self::Review(comment) => comment.body.as_str(),
+            Self::Issue(comment) => comment.body.as_deref().unwrap_or(""),
+            Self::ReviewSummary(review) => review.body.as_deref().unwrap_or(""),
         }
     }
 }
 
 /// Returns whether a review comment no longer has a usable source location.
 pub fn review_comment_is_outdated(comment: &ReviewComment) -> bool {
-    let has_path = comment
-        .path
-        .as_deref()
-        .map(|value| !value.trim().is_empty())
-        .unwrap_or(false);
+    let has_path = !comment.path.trim().is_empty();
     let has_line = comment.line.or(comment.start_line).is_some();
     !(has_path && has_line)
 }
@@ -211,6 +174,7 @@ impl fmt::Display for ListNodeKind {
             Self::Thread => write!(f, "thread"),
             Self::Reply => write!(f, "reply"),
             Self::Issue => write!(f, "issue"),
+            Self::Review => write!(f, "review"),
         }
     }
 }

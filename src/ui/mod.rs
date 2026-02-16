@@ -1,13 +1,12 @@
 //! Top-level UI composition.
 
-use crate::app::state::{AppState, InputState};
-use crate::domain::Route;
+use crate::app::state::AppState;
+use crate::domain::{CommentRef, ListNodeKind, Route};
 use crate::render::markdown::MarkdownRenderer;
-use crate::ui::components::header::{self, HeaderModel};
+use crate::ui::components::footer;
+use crate::ui::components::header::{self, HeaderModel, ReviewProgress};
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::layout::{Constraint, Layout};
 
 pub mod components;
 pub mod screens;
@@ -15,13 +14,22 @@ pub mod theme;
 
 /// Draws the active screen.
 pub fn render(frame: &mut Frame<'_>, state: &AppState, markdown: &mut MarkdownRenderer) {
-    let root = Layout::vertical([Constraint::Length(4), Constraint::Min(8)]).split(frame.area());
+    let hints = build_hints(state);
 
-    let (resolved, total) = state
-        .review
-        .as_ref()
-        .map(|review| review.data.review_thread_totals())
-        .unwrap_or((0, 0));
+    let root = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(8),
+        Constraint::Length(footer::required_height(frame.area().width, &hints)),
+    ])
+    .split(frame.area());
+
+    let review_progress = state.review.as_ref().and_then(|review| {
+        let (resolved, total) = review.data.review_thread_totals();
+        (state.route == Route::Review && total > 0).then_some(ReviewProgress {
+            resolved_threads: resolved,
+            total_threads: total,
+        })
+    });
 
     let context_label = match state.route {
         Route::Search => state.repository_label.clone(),
@@ -37,39 +45,15 @@ pub fn render(frame: &mut Frame<'_>, state: &AppState, markdown: &mut MarkdownRe
             .unwrap_or_else(|| state.repository_label.clone()),
     };
 
-    let hints = match state.route {
-        Route::Search => {
-            "[j/k/up/down] navigate  [enter] open PR  [type] fuzzy filter  [r] refresh  [q] quit"
-                .to_owned()
-        }
-        Route::Review => {
-            let hide_resolved = state
-                .review
-                .as_ref()
-                .map(|review| review.hide_resolved)
-                .unwrap_or(true);
-            let resolved_hint = if hide_resolved {
-                "[f] show resolved"
-            } else {
-                "[f] hide resolved"
-            };
-            format!(
-                "[j/k/up/down] navigate  [o/z] collapse  [t] resolve/unresolve  {resolved_hint}  [e/s/x] reply  [C/A/X] review submit  [pgup/pgdn] scroll  [b] back  [r] refresh  [q] quit"
-            )
-        }
-    };
-
     header::render(
         frame,
         root[0],
         &HeaderModel {
             app_label: "review-tui".to_owned(),
             context_label,
-            hints,
             operation: state.operation_display(),
             error: state.error_message.clone(),
-            resolved_threads: resolved,
-            total_threads: total,
+            review_progress,
         },
     );
 
@@ -78,47 +62,80 @@ pub fn render(frame: &mut Frame<'_>, state: &AppState, markdown: &mut MarkdownRe
         Route::Review => screens::review::render(frame, root[1], state, markdown),
     }
 
-    if let Some(input) = state.input.as_ref() {
-        render_input_overlay(frame, input);
+    footer::render(frame, root[2], &hints);
+}
+
+fn build_hints(state: &AppState) -> String {
+    match state.route {
+        Route::Search => {
+            if state.is_search_focused() {
+                "[type] edit query  [backspace] delete  [enter/esc] unfocus".to_owned()
+            } else {
+                "[j/k/up/down] navigate  [enter] open PR  [W] open web  [s] focus search  [R] refresh  [q] quit"
+                    .to_owned()
+            }
+        }
+        Route::Review => {
+            let mut parts = vec![
+                "[j/k/up/down] navigate".to_owned(),
+                "[pgup/pgdn] scroll".to_owned(),
+            ];
+
+            if let Some(review) = state.review.as_ref() {
+                let has_review_threads = review.data.review_thread_totals().1 > 0;
+                if has_review_threads {
+                    let resolved_hint = if review.hide_resolved {
+                        "[f] show resolved"
+                    } else {
+                        "[f] hide resolved"
+                    };
+                    parts.push(resolved_hint.to_owned());
+                }
+
+                if let Some(node) = review.selected_node() {
+                    if node.kind == ListNodeKind::Thread {
+                        parts.push("[o/z] collapse".to_owned());
+                    }
+                    let can_open_web = match &node.comment {
+                        CommentRef::Review(comment) => !comment.html_url.trim().is_empty(),
+                        CommentRef::Issue(comment) => !comment.html_url.as_str().trim().is_empty(),
+                        CommentRef::ReviewSummary(review) => {
+                            !review.html_url.as_str().trim().is_empty()
+                        }
+                    };
+                    if can_open_web {
+                        parts.push("[W] open web".to_owned());
+                    }
+                }
+
+                if let Some(context) = review.selected_thread_context() {
+                    if context.thread_id.is_some() {
+                        let thread_action = if context.is_resolved {
+                            "[t] unresolve"
+                        } else {
+                            "[t] resolve"
+                        };
+                        parts.push(thread_action.to_owned());
+                    }
+
+                    let has_reply_draft = review
+                        .selected_reply_draft()
+                        .map(|draft| !draft.trim().is_empty())
+                        .unwrap_or(false);
+                    if has_reply_draft {
+                        parts.push("[e/s/x] reply".to_owned());
+                    } else {
+                        parts.push("[e] edit reply".to_owned());
+                    }
+                }
+            }
+
+            parts.push("[C/A/X] review submit".to_owned());
+            parts.push("[b] back".to_owned());
+            parts.push("[R] refresh".to_owned());
+            parts.push("[q] quit".to_owned());
+
+            parts.join("  ")
+        }
     }
-}
-
-fn render_input_overlay(frame: &mut Frame<'_>, input: &InputState) {
-    let area = centered_rect(70, 24, frame.area());
-    let block = Block::default()
-        .title(format!(" {} ", input.title))
-        .borders(Borders::ALL);
-
-    let lines = vec![
-        Line::from(format!(" {}", input.prompt)),
-        Line::from(""),
-        Line::from(format!(" > {}", input.buffer)),
-        Line::from(""),
-        Line::from(" Enter submit   Esc cancel"),
-    ];
-
-    frame.render_widget(Clear, area);
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(block)
-            .wrap(Wrap { trim: false })
-            .alignment(Alignment::Left),
-        area,
-    );
-}
-
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let popup_layout = Layout::vertical([
-        Constraint::Percentage((100 - percent_y) / 2),
-        Constraint::Percentage(percent_y),
-        Constraint::Percentage((100 - percent_y) / 2),
-    ])
-    .split(area);
-
-    Layout::horizontal([
-        Constraint::Percentage((100 - percent_x) / 2),
-        Constraint::Percentage(percent_x),
-        Constraint::Percentage((100 - percent_x) / 2),
-    ])
-    .split(popup_layout[1])[1]
 }

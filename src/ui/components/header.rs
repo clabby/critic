@@ -2,24 +2,29 @@
 
 use crate::ui::theme;
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::Style;
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, Gauge, Paragraph};
 
 /// Header payload consumed by the renderer.
 #[derive(Debug, Clone)]
 pub struct HeaderModel {
     pub app_label: String,
     pub context_label: String,
-    pub hints: String,
     pub operation: Option<String>,
     pub error: Option<String>,
+    pub review_progress: Option<ReviewProgress>,
+}
+
+/// Review thread progress stats for the selected pull request.
+#[derive(Debug, Clone, Copy)]
+pub struct ReviewProgress {
     pub resolved_threads: usize,
     pub total_threads: usize,
 }
 
-/// Renders the screen header with title, progress, and keybinding hints.
+/// Renders the screen header with title, operation/error state, and thread progress.
 pub fn render(frame: &mut Frame<'_>, area: Rect, model: &HeaderModel) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -28,68 +33,66 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, model: &HeaderModel) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(inner);
-
-    let ratio_text = thread_ratio_text(model.resolved_threads, model.total_threads);
-    let progress = progress_bar(model.resolved_threads, model.total_threads, 18);
-
-    let top = Line::from(vec![
+    let top_left = Line::from(vec![
         Span::styled(format!(" {}", model.app_label), theme::title()),
         Span::styled(format!(" {}", model.context_label), theme::dim()),
-        Span::raw("    "),
-        Span::styled(
-            ratio_text,
-            Style::default().fg(theme::title().fg.unwrap_or_default()),
-        ),
-        Span::raw(" "),
-        Span::styled(progress, theme::info()),
-        if let Some(operation) = &model.operation {
+        if let Some(error) = &model.error {
+            Span::styled(format!("  error: {error}"), theme::error())
+        } else if let Some(operation) = &model.operation {
             Span::styled(format!("  {operation}"), theme::info())
         } else {
             Span::raw("")
         },
     ]);
 
-    let hints = if let Some(error) = &model.error {
-        Line::from(vec![Span::styled(
-            format!(" error: {error}"),
-            theme::error(),
-        )])
+    if let Some(progress) = model.review_progress {
+        let right_width = inner.width.min(44);
+        let columns =
+            Layout::horizontal([Constraint::Min(1), Constraint::Length(right_width)]).split(inner);
+        let right_sections = Layout::horizontal([
+            Constraint::Min(1),
+            Constraint::Length(1),
+            Constraint::Length(18),
+        ])
+        .split(columns[1]);
+
+        frame.render_widget(Paragraph::new(top_left), columns[0]);
+        frame.render_widget(
+            Paragraph::new(Line::from(thread_ratio_text(progress))).alignment(Alignment::Right),
+            right_sections[0],
+        );
+        frame.render_widget(Paragraph::new(" "), right_sections[1]);
+        frame.render_widget(progress_gauge(progress), right_sections[2]);
     } else {
-        Line::from(vec![Span::styled(
-            format!(" {}", model.hints),
-            theme::dim(),
-        )])
+        frame.render_widget(Paragraph::new(top_left), inner);
+    }
+}
+
+fn thread_ratio_text(progress: ReviewProgress) -> String {
+    format!(
+        "Resolved Threads {}/{}",
+        progress.resolved_threads, progress.total_threads
+    )
+}
+
+fn progress_gauge(progress: ReviewProgress) -> Gauge<'static> {
+    let ratio = if progress.total_threads == 0 {
+        0.0
+    } else {
+        progress.resolved_threads as f64 / progress.total_threads as f64
     };
+    let percent = (ratio * 100.0).round() as usize;
 
-    frame.render_widget(Paragraph::new(top), rows[0]);
-    frame.render_widget(Paragraph::new(hints), rows[1]);
-}
-
-fn thread_ratio_text(resolved: usize, total: usize) -> String {
-    if total == 0 {
-        "Review Threads 0/0".to_owned()
-    } else {
-        let percent = ((resolved as f64 / total as f64) * 100.0).round() as usize;
-        format!("Review Threads {resolved}/{total} ({percent}%)")
-    }
-}
-
-fn progress_bar(resolved: usize, total: usize, width: usize) -> String {
-    if total == 0 || width == 0 {
-        return String::new();
-    }
-
-    let ratio = resolved as f64 / total as f64;
-    let filled = (ratio * width as f64).round() as usize;
-
-    let mut out = String::with_capacity(width);
-    for i in 0..width {
-        if i < filled {
-            out.push('█');
-        } else {
-            out.push('░');
-        }
-    }
-    out
+    Gauge::default()
+        .ratio(ratio.clamp(0.0, 1.0))
+        .label(Span::styled(
+            format!("{percent}%"),
+            Style::default().fg(Color::Black),
+        ))
+        .gauge_style(
+            Style::default()
+                .fg(Color::Rgb(245, 205, 82))
+                .bg(Color::Rgb(94, 80, 30)),
+        )
+        .style(Style::default().fg(Color::Black).bg(Color::Rgb(94, 80, 30)))
 }

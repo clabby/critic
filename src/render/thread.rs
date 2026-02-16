@@ -1,8 +1,8 @@
 //! Right-pane renderers for review threads and issue comments.
 
 use crate::domain::{
-    CommentRef, IssueComment, ListNode, ListNodeKind, ReviewComment, ReviewThread,
-    review_comment_is_outdated,
+    CommentRef, IssueComment, ListNode, ListNodeKind, PullReviewSummary, ReviewComment,
+    ReviewThread, review_comment_is_outdated,
 };
 use crate::render::markdown::MarkdownRenderer;
 use ratatui::style::{Color, Modifier, Style};
@@ -86,12 +86,16 @@ pub fn render_issue_preview(
             .add_modifier(Modifier::BOLD),
     )]));
     out.push(Line::from(vec![Span::styled(
-        format!("@{}  {}", issue.author, short_date(&issue.created_at)),
+        format!(
+            "@{}  {}",
+            issue.user.login,
+            short_date(issue.created_at.to_rfc3339().as_str())
+        ),
         Style::default().fg(Color::DarkGray),
     )]));
     out.push(Line::default());
 
-    let rendered = markdown.render(&issue.body);
+    let rendered = markdown.render(issue.body.as_deref().unwrap_or(""));
     out.extend(prefix_lines(rendered, "  "));
 
     out
@@ -107,17 +111,25 @@ fn render_thread_comment(
 
     out.push(Line::from(vec![
         Span::styled(
-            format!("{indent}@{}", thread.comment.author),
+            format!(
+                "{indent}@{}",
+                thread
+                    .comment
+                    .user
+                    .as_ref()
+                    .map(|user| user.login.as_str())
+                    .unwrap_or("unknown")
+            ),
             Style::default().fg(Color::LightBlue),
         ),
         Span::raw("  "),
         Span::styled(
-            short_date(&thread.comment.created_at),
+            short_date(thread.comment.created_at.to_rfc3339().as_str()),
             Style::default().fg(Color::DarkGray),
         ),
     ]));
 
-    let rendered = markdown.render(&thread.comment.body);
+    let rendered = markdown.render(thread.comment.body.as_str());
     out.extend(prefix_lines(rendered, &format!("{indent}  ")));
     out.push(Line::default());
 
@@ -131,13 +143,13 @@ fn selected_patch_comment<'a>(
     root: &'a ReviewThread,
 ) -> Option<&'a ReviewComment> {
     match &selected.comment {
-        CommentRef::Review(comment) if comment.diff_hunk.is_some() => Some(comment),
+        CommentRef::Review(comment) if !comment.diff_hunk.trim().is_empty() => Some(comment),
         _ => first_patch_comment(root),
     }
 }
 
 fn first_patch_comment(thread: &ReviewThread) -> Option<&ReviewComment> {
-    if thread.comment.diff_hunk.is_some() {
+    if !thread.comment.diff_hunk.trim().is_empty() {
         return Some(&thread.comment);
     }
 
@@ -171,15 +183,15 @@ fn append_patch_excerpt(out: &mut Vec<Line<'static>>, comment: &ReviewComment) {
         },
     ]));
 
-    let Some(hunk) = &comment.diff_hunk else {
+    if comment.diff_hunk.trim().is_empty() {
         out.push(Line::from(vec![Span::styled(
             "  [no patch hunk available]",
             Style::default().fg(Color::DarkGray),
         )]));
         return;
-    };
+    }
 
-    for line in hunk.lines().take(28) {
+    for line in comment.diff_hunk.lines().take(28) {
         let style = if line.starts_with("@@") {
             Style::default().fg(Color::Cyan)
         } else if line.starts_with('+') {
@@ -195,12 +207,52 @@ fn append_patch_excerpt(out: &mut Vec<Line<'static>>, comment: &ReviewComment) {
 }
 
 fn comment_location(comment: &ReviewComment) -> String {
-    let path = comment.path.as_deref().unwrap_or("(unknown path)");
+    let path = if comment.path.trim().is_empty() {
+        "(unknown path)"
+    } else {
+        comment.path.as_str()
+    };
     match (comment.start_line, comment.line) {
         (Some(start), Some(end)) if start != end => format!("{path}:{start}-{end}"),
         (_, Some(line)) => format!("{path}:{line}"),
         _ => path.to_owned(),
     }
+}
+
+/// Renders pull-request review summary content from `/pulls/{pull}/reviews`.
+pub fn render_review_summary_preview(
+    markdown: &mut MarkdownRenderer,
+    review: &PullReviewSummary,
+) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
+
+    out.push(Line::from(vec![Span::styled(
+        "Review Summary",
+        Style::default()
+            .fg(Color::LightYellow)
+            .add_modifier(Modifier::BOLD),
+    )]));
+    out.push(Line::from(vec![Span::styled(
+        format!(
+            "@{}  {}",
+            review
+                .user
+                .as_ref()
+                .map(|user| user.login.as_str())
+                .unwrap_or("unknown"),
+            review
+                .submitted_at
+                .map(|value| short_date(value.to_rfc3339().as_str()))
+                .unwrap_or_else(|| "unknown".to_owned())
+        ),
+        Style::default().fg(Color::DarkGray),
+    )]));
+    out.push(Line::default());
+
+    let rendered = markdown.render(review.body.as_deref().unwrap_or(""));
+    out.extend(prefix_lines(rendered, "  "));
+
+    out
 }
 
 fn prefix_lines(lines: Vec<Line<'static>>, prefix: &str) -> Vec<Line<'static>> {

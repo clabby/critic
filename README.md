@@ -16,7 +16,6 @@ Terminal UI for browsing GitHub pull request review threads.
 - Outdated comment indicator for threads without a valid source location.
 - Operation spinner in the header with active async task label.
 - Optional debug modes behind the `harness` cargo feature:
-  - `--demo` deterministic fixture mode.
   - `--harness-dump` non-interactive frame dump mode.
 
 ## Requirements
@@ -36,12 +35,6 @@ Optional explicit repository:
 cargo run -- --owner <owner> --repo <repo>
 ```
 
-Demo mode (no network/API calls):
-
-```bash
-cargo run --features harness -- --demo
-```
-
 ## Visual Harness
 
 Render deterministic search/review frames to stdout (feature-gated):
@@ -57,10 +50,12 @@ This is useful for fast visual checks in CI or local iteration without opening t
 ### Search Screen
 
 - `j`/`k` or arrow keys: move selection
-- `type` + `Backspace`: fuzzy query
+- `s`: focus search input
+- `Enter`/`Esc`: unfocus search input
+- `type` + `Backspace`: edit fuzzy query (while focused)
 - `Enter`: open selected pull request
-- `r`: refresh open pull request list
-- `q`/`Esc`: quit
+- `R`: refresh open pull request list
+- `q`: quit
 
 ### Review Screen
 
@@ -69,20 +64,19 @@ This is useful for fast visual checks in CI or local iteration without opening t
 - `t`: resolve/unresolve selected thread
 - `f`: show/hide resolved threads
 - `e`: edit pending reply for selected thread
-- `s`: send pending reply
+- `s`: send staged pending reply
 - `x`: clear pending reply
-- `C`: open submit-review modal (comment)
-- `A`: open submit-review modal (approve)
-- `X`: open submit-review modal (request changes)
-- `Enter`: submit active input modal
-- `Esc`: close active input modal or go back to search
+- `C`: open editor and submit review comment
+- `A`: open editor and submit approval
+- `X`: open editor and submit request changes
+- `Esc`: back to search
 - `PageDown`/`PageUp`: scroll right preview pane
-- `r`: refresh comments for current pull request
+- `R`: refresh comments for current pull request
 - `b`: back to search
 - `q`: quit
 
-Note: `--demo` and `--harness-dump` are only available when the `harness` feature is enabled.
-In `--demo` mode, network mutations are intentionally disabled.
+Note: `--harness-dump` is only available when the `harness` feature is enabled.
+Interactive compose uses external editor fallback order: `$VISUAL`, `$EDITOR`, `nvim`, `vim`, `vi`.
 
 ## Testing
 
@@ -103,3 +97,4 @@ cargo test
 - `src/ui/screens/search.rs`: PR search screen
 - `src/ui/screens/review.rs`: split-pane review screen
 - `src/harness/mod.rs`: deterministic frame dump harness
+- `src/harness/fixtures.rs`: harness-only deterministic fixture data

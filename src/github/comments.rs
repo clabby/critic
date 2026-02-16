@@ -1,10 +1,10 @@
 //! Pull request comment fetch and thread organization.
 
 use crate::domain::{
-    IssueComment, PullRequestComment, PullRequestData, PullRequestSummary, ReviewComment,
-    ReviewThread,
+    IssueComment, PullRequestComment, PullRequestData, PullRequestSummary, PullReviewSummary,
+    ReviewComment, ReviewThread,
 };
-use octocrab::models::{CommentId, issues, pulls};
+use octocrab::models::{CommentId, pulls};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
@@ -17,45 +17,12 @@ pub type Result<T> = std::result::Result<T, PullRequestCommentsError>;
 pub enum PullRequestCommentsError {
     #[error("GitHub API request failed: {0}")]
     Octocrab(#[from] octocrab::Error),
-    #[error("failed to serialize GitHub response payload: {0}")]
-    Serialization(#[from] serde_json::Error),
     #[error("graphql response error: {0}")]
     GraphQlResponseError(String),
     #[error("unsupported review event: {0}")]
     InvalidReviewEvent(String),
     #[error("review event {event} produced unexpected state {state}")]
     UnexpectedReviewState { event: String, state: String },
-}
-
-#[derive(Debug, Deserialize)]
-struct SerializedUser {
-    login: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SerializedPullComment {
-    id: u64,
-    in_reply_to_id: Option<u64>,
-    body: Option<String>,
-    diff_hunk: Option<String>,
-    path: Option<String>,
-    line: Option<serde_json::Value>,
-    start_line: Option<serde_json::Value>,
-    original_line: Option<serde_json::Value>,
-    original_start_line: Option<serde_json::Value>,
-    side: Option<serde_json::Value>,
-    html_url: Option<String>,
-    created_at: Option<String>,
-    user: Option<SerializedUser>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SerializedIssueComment {
-    id: u64,
-    body: Option<String>,
-    html_url: Option<String>,
-    created_at: Option<String>,
-    user: Option<SerializedUser>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -164,19 +131,30 @@ pub async fn fetch_pull_request_data(
     let review_threads =
         list_review_comment_threads(client, &pull.owner, &pull.repo, pull.number).await?;
     let issue_comments = list_issue_comments(client, &pull.owner, &pull.repo, pull.number).await?;
+    let review_summaries =
+        list_pull_review_summary_comments(client, &pull.owner, &pull.repo, pull.number).await?;
 
-    let mut merged: Vec<(String, PullRequestComment)> = review_threads
+    let mut merged: Vec<(i64, PullRequestComment)> = review_threads
         .into_iter()
         .map(|thread| {
             (
-                thread.comment.created_at.clone(),
+                thread.comment.created_at.timestamp_millis(),
                 PullRequestComment::ReviewThread(Box::new(thread)),
             )
         })
         .chain(issue_comments.into_iter().map(|comment| {
             (
-                comment.created_at.clone(),
+                comment.created_at.timestamp_millis(),
                 PullRequestComment::IssueComment(Box::new(comment)),
+            )
+        }))
+        .chain(review_summaries.into_iter().map(|review| {
+            (
+                review
+                    .submitted_at
+                    .map(|value| value.timestamp_millis())
+                    .unwrap_or_default(),
+                PullRequestComment::ReviewSummary(Box::new(review)),
             )
         }))
         .collect();
@@ -320,12 +298,7 @@ async fn list_review_comment_threads(
         .per_page(100)
         .send()
         .await?;
-    let comments = client.all_pages(first_page).await?;
-
-    let mapped = comments
-        .into_iter()
-        .map(pull_comment_from_octocrab)
-        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let mapped = client.all_pages(first_page).await?;
 
     let resolved_by_comment_id =
         review_thread_resolution_map(client, owner, repo, pull_number).await?;
@@ -350,77 +323,32 @@ async fn list_issue_comments(
         .per_page(100)
         .send()
         .await?;
-    let comments = client.all_pages(first_page).await?;
+    client.all_pages(first_page).await.map_err(Into::into)
+}
 
-    comments
+async fn list_pull_review_summary_comments(
+    client: &octocrab::Octocrab,
+    owner: &str,
+    repo: &str,
+    pull_number: u64,
+) -> Result<Vec<PullReviewSummary>> {
+    let first_page = client
+        .pulls(owner, repo)
+        .list_reviews(pull_number)
+        .per_page(100)
+        .send()
+        .await?;
+    let reviews = client.all_pages(first_page).await?;
+
+    Ok(reviews
         .into_iter()
-        .map(issue_comment_from_octocrab)
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(Into::into)
-}
-
-fn pull_comment_from_octocrab(
-    comment: pulls::Comment,
-) -> std::result::Result<ReviewComment, serde_json::Error> {
-    let serialized: SerializedPullComment = serde_json::from_value(serde_json::to_value(comment)?)?;
-
-    Ok(ReviewComment {
-        id: serialized.id,
-        in_reply_to_id: serialized.in_reply_to_id,
-        body: serialized.body.unwrap_or_default(),
-        diff_hunk: serialized.diff_hunk,
-        path: serialized.path,
-        line: value_as_u64(serialized.line.as_ref()),
-        start_line: value_as_u64(serialized.start_line.as_ref()),
-        original_line: value_as_u64(serialized.original_line.as_ref()),
-        original_start_line: value_as_u64(serialized.original_start_line.as_ref()),
-        side: value_as_string(serialized.side.as_ref()),
-        html_url: serialized.html_url,
-        created_at: serialized
-            .created_at
-            .unwrap_or_else(|| "unknown".to_owned()),
-        author: serialized
-            .user
-            .and_then(|user| user.login)
-            .unwrap_or_else(|| "unknown".to_owned()),
-    })
-}
-
-fn issue_comment_from_octocrab(
-    comment: issues::Comment,
-) -> std::result::Result<IssueComment, serde_json::Error> {
-    let serialized: SerializedIssueComment =
-        serde_json::from_value(serde_json::to_value(comment)?)?;
-
-    Ok(IssueComment {
-        id: serialized.id,
-        body: serialized.body.unwrap_or_default(),
-        html_url: serialized.html_url,
-        created_at: serialized
-            .created_at
-            .unwrap_or_else(|| "unknown".to_owned()),
-        author: serialized
-            .user
-            .and_then(|user| user.login)
-            .unwrap_or_else(|| "unknown".to_owned()),
-    })
-}
-
-fn value_as_u64(value: Option<&serde_json::Value>) -> Option<u64> {
-    let value = value?;
-    match value {
-        serde_json::Value::Number(number) => number.as_u64(),
-        serde_json::Value::String(text) => text.parse::<u64>().ok(),
-        _ => None,
-    }
-}
-
-fn value_as_string(value: Option<&serde_json::Value>) -> Option<String> {
-    let value = value?;
-    match value {
-        serde_json::Value::String(text) => Some(text.clone()),
-        other => Some(other.to_string()),
-    }
+        .filter(|review| {
+            review
+                .body
+                .as_deref()
+                .is_some_and(|body| !body.trim().is_empty())
+        })
+        .collect())
 }
 
 fn build_review_threads(comments: Vec<ReviewComment>) -> Vec<ReviewThread> {
@@ -428,8 +356,8 @@ fn build_review_threads(comments: Vec<ReviewComment>) -> Vec<ReviewThread> {
     let mut parent_links: Vec<(u64, Option<u64>)> = Vec::with_capacity(comments.len());
 
     for comment in comments {
-        let id = comment.id;
-        let parent_id = comment.in_reply_to_id;
+        let id = comment.id.into_inner();
+        let parent_id = comment.in_reply_to_id.map(|parent| parent.into_inner());
         nodes.insert(
             id,
             BuildNode {
@@ -489,7 +417,9 @@ fn find_thread_resolution(
     thread: &ReviewThread,
     resolved_by_comment_id: &HashMap<u64, (bool, String)>,
 ) -> Option<(bool, String)> {
-    if let Some((is_resolved, thread_id)) = resolved_by_comment_id.get(&thread.comment.id) {
+    if let Some((is_resolved, thread_id)) =
+        resolved_by_comment_id.get(&thread.comment.id.into_inner())
+    {
         return Some((*is_resolved, thread_id.clone()));
     }
 
@@ -588,23 +518,30 @@ async fn pull_request_file_paths(
 #[cfg(test)]
 mod tests {
     use super::{ReviewComment, build_review_threads};
+    use serde_json::json;
 
     fn review_comment(id: u64, in_reply_to_id: Option<u64>) -> ReviewComment {
-        ReviewComment {
-            id,
-            in_reply_to_id,
-            body: format!("comment {id}"),
-            diff_hunk: None,
-            path: Some("src/lib.rs".to_owned()),
-            line: Some(1),
-            start_line: None,
-            original_line: None,
-            original_start_line: None,
-            side: Some("RIGHT".to_owned()),
-            html_url: None,
-            created_at: "2026-02-01T00:00:00Z".to_owned(),
-            author: "alice".to_owned(),
+        let mut payload = json!({
+            "url": format!("https://example.invalid/comments/{id}"),
+            "id": id,
+            "node_id": format!("PRRC_{id}"),
+            "diff_hunk": "@@ -1,1 +1,1 @@",
+            "path": "src/lib.rs",
+            "commit_id": "deadbeef",
+            "original_commit_id": "deadbeef",
+            "body": format!("comment {id}"),
+            "created_at": "2026-02-01T00:00:00Z",
+            "updated_at": "2026-02-01T00:00:00Z",
+            "html_url": format!("https://example.invalid/comments/{id}"),
+            "_links": {},
+            "line": 1
+        });
+
+        if let Some(reply_to) = in_reply_to_id {
+            payload["in_reply_to_id"] = json!(reply_to);
         }
+
+        serde_json::from_value(payload).expect("valid pull review comment fixture")
     }
 
     #[test]
@@ -613,9 +550,9 @@ mod tests {
         let threads = build_review_threads(comments);
 
         assert_eq!(threads.len(), 1);
-        assert_eq!(threads[0].comment.id, 1);
+        assert_eq!(threads[0].comment.id.into_inner(), 1);
         assert_eq!(threads[0].replies.len(), 1);
-        assert_eq!(threads[0].replies[0].comment.id, 2);
+        assert_eq!(threads[0].replies[0].comment.id.into_inner(), 2);
     }
 
     #[test]
@@ -624,6 +561,6 @@ mod tests {
         let threads = build_review_threads(comments);
 
         assert_eq!(threads.len(), 1);
-        assert_eq!(threads[0].comment.id, 5);
+        assert_eq!(threads[0].comment.id.into_inner(), 5);
     }
 }
