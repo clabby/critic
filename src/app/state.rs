@@ -241,31 +241,57 @@ impl ReviewScreenState {
         self.nodes.clear();
         self.threads_by_key.clear();
 
+        let summary_review_ids: HashSet<u64> = self
+            .data
+            .comments
+            .iter()
+            .filter_map(|entry| match entry {
+                PullRequestComment::ReviewSummary(review) => Some(review.id.into_inner()),
+                _ => None,
+            })
+            .collect();
+        let mut grouped_threads: HashMap<u64, Vec<ReviewThread>> = HashMap::new();
+
+        for entry in &self.data.comments {
+            let PullRequestComment::ReviewThread(thread) = entry else {
+                continue;
+            };
+            let Some(review_id) = thread
+                .comment
+                .pull_request_review_id
+                .map(|id| id.into_inner())
+            else {
+                continue;
+            };
+            if !summary_review_ids.contains(&review_id) {
+                continue;
+            }
+            grouped_threads
+                .entry(review_id)
+                .or_default()
+                .push((**thread).clone());
+        }
+
         for entry in &self.data.comments {
             match entry {
                 PullRequestComment::ReviewThread(thread) => {
-                    let key = thread_key(thread);
-                    self.threads_by_key.insert(key.clone(), (**thread).clone());
-
+                    let review_id = thread
+                        .comment
+                        .pull_request_review_id
+                        .map(|id| id.into_inner());
+                    if review_id.is_some_and(|id| summary_review_ids.contains(&id)) {
+                        continue;
+                    }
                     if self.hide_resolved && thread.is_resolved {
                         continue;
                     }
-
-                    self.nodes.push(ListNode {
-                        key: key.clone(),
-                        kind: ListNodeKind::Thread,
-                        depth: 0,
-                        root_key: Some(key.clone()),
-                        is_resolved: thread.is_resolved,
-                        is_outdated: review_comment_is_outdated(&thread.comment),
-                        comment: CommentRef::Review(thread.comment.clone()),
-                    });
-
-                    if self.collapsed.contains(&key) {
-                        continue;
-                    }
-
-                    append_reply_nodes(&mut self.nodes, thread, 1, &key);
+                    append_thread_nodes(
+                        &mut self.nodes,
+                        &mut self.threads_by_key,
+                        &self.collapsed,
+                        thread,
+                        0,
+                    );
                 }
                 PullRequestComment::IssueComment(comment) => {
                     self.nodes.push(ListNode {
@@ -279,15 +305,55 @@ impl ReviewScreenState {
                     });
                 }
                 PullRequestComment::ReviewSummary(review) => {
+                    let review_id = review.id.into_inner();
+                    let summary_threads = grouped_threads.remove(&review_id).unwrap_or_default();
+                    if summary_threads.is_empty() {
+                        self.nodes.push(ListNode {
+                            key: format!("review-issue:{}", review.id),
+                            kind: ListNodeKind::Issue,
+                            depth: 0,
+                            root_key: None,
+                            is_resolved: false,
+                            is_outdated: false,
+                            comment: CommentRef::ReviewSummary((**review).clone()),
+                        });
+                        continue;
+                    }
+
+                    let has_unresolved_threads =
+                        summary_threads.iter().any(|thread| !thread.is_resolved);
+                    let group_resolved = !has_unresolved_threads;
+                    if self.hide_resolved && group_resolved {
+                        continue;
+                    }
+
+                    let group_key = review_group_key(review_id);
                     self.nodes.push(ListNode {
-                        key: format!("review:{}", review.id),
+                        key: group_key.clone(),
                         kind: ListNodeKind::Review,
                         depth: 0,
                         root_key: None,
-                        is_resolved: false,
+                        is_resolved: group_resolved,
                         is_outdated: false,
                         comment: CommentRef::ReviewSummary((**review).clone()),
                     });
+
+                    if self.collapsed.contains(&group_key) {
+                        continue;
+                    }
+
+                    for thread in &summary_threads {
+                        if self.hide_resolved && thread.is_resolved {
+                            continue;
+                        }
+                        append_thread_nodes(
+                            &mut self.nodes,
+                            &mut self.threads_by_key,
+                            &self.collapsed,
+                            thread,
+                            1,
+                        );
+                    }
                 }
             }
         }
@@ -378,7 +444,9 @@ impl ReviewScreenState {
             return;
         };
 
-        if node.kind != ListNodeKind::Thread {
+        let is_collapsible_review_group =
+            node.kind == ListNodeKind::Review && is_review_group_key(&node.key);
+        if node.kind != ListNodeKind::Thread && !is_collapsible_review_group {
             return;
         }
         let key = node.key.clone();
@@ -415,7 +483,7 @@ fn append_reply_nodes(
 ) {
     for reply in &thread.replies {
         nodes.push(ListNode {
-            key: format!("reply:{}", reply.comment.id),
+            key: format!("reply:{}", reply.comment.id.into_inner()),
             kind: ListNodeKind::Reply,
             depth,
             root_key: Some(root_key.to_owned()),
@@ -428,6 +496,33 @@ fn append_reply_nodes(
     }
 }
 
+fn append_thread_nodes(
+    nodes: &mut Vec<ListNode>,
+    threads_by_key: &mut HashMap<String, ReviewThread>,
+    collapsed: &HashSet<String>,
+    thread: &ReviewThread,
+    depth: usize,
+) {
+    let key = thread_key(thread);
+    threads_by_key.insert(key.clone(), thread.clone());
+
+    nodes.push(ListNode {
+        key: key.clone(),
+        kind: ListNodeKind::Thread,
+        depth,
+        root_key: Some(key.clone()),
+        is_resolved: thread.is_resolved,
+        is_outdated: review_comment_is_outdated(&thread.comment),
+        comment: CommentRef::Review(thread.comment.clone()),
+    });
+
+    if collapsed.contains(&key) {
+        return;
+    }
+
+    append_reply_nodes(nodes, thread, depth + 1, &key);
+}
+
 fn thread_key(thread: &ReviewThread) -> String {
     match thread
         .thread_id
@@ -438,4 +533,12 @@ fn thread_key(thread: &ReviewThread) -> String {
         Some(id) => format!("thread:{id}"),
         None => format!("comment:{}", thread.comment.id.into_inner()),
     }
+}
+
+fn review_group_key(review_id: u64) -> String {
+    format!("review-group:{review_id}")
+}
+
+fn is_review_group_key(key: &str) -> bool {
+    key.starts_with("review-group:")
 }

@@ -213,27 +213,39 @@ fn handle_key_event(
 }
 
 fn handle_mouse_event(state: &mut AppState, mouse: MouseEvent) {
-    if state.route != Route::Review {
-        return;
-    }
-
     let Some(delta) = mouse_scroll_delta(mouse.kind) else {
         return;
     };
 
-    let Some(review) = state.review.as_mut() else {
-        return;
-    };
-
-    match delta {
-        MouseScrollDelta::Up(lines) => {
-            for _ in 0..lines {
-                review.scroll_preview_up();
+    match state.route {
+        Route::Search => match delta {
+            MouseScrollDelta::Up(lines) => {
+                for _ in 0..lines {
+                    state.search_move_up();
+                }
             }
-        }
-        MouseScrollDelta::Down(lines) => {
-            for _ in 0..lines {
-                review.scroll_preview_down();
+            MouseScrollDelta::Down(lines) => {
+                for _ in 0..lines {
+                    state.search_move_down();
+                }
+            }
+        },
+        Route::Review => {
+            let Some(review) = state.review.as_mut() else {
+                return;
+            };
+
+            match delta {
+                MouseScrollDelta::Up(lines) => {
+                    for _ in 0..lines {
+                        review.scroll_preview_up();
+                    }
+                }
+                MouseScrollDelta::Down(lines) => {
+                    for _ in 0..lines {
+                        review.scroll_preview_down();
+                    }
+                }
             }
         }
     }

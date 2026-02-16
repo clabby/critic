@@ -93,7 +93,9 @@ fn build_hints(state: &AppState) -> String {
                 }
 
                 if let Some(node) = review.selected_node() {
-                    if node.kind == ListNodeKind::Thread {
+                    let collapsible_review_group =
+                        node.kind == ListNodeKind::Review && node.key.starts_with("review-group:");
+                    if node.kind == ListNodeKind::Thread || collapsible_review_group {
                         parts.push("[o/z] collapse".to_owned());
                     }
                     let can_open_web = match &node.comment {

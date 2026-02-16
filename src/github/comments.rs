@@ -306,6 +306,9 @@ async fn list_review_comment_threads(
     let mut threads = build_review_threads(mapped);
     for thread in &mut threads {
         apply_thread_resolution(thread, &resolved_by_comment_id);
+        if thread.thread_id.is_none() {
+            set_thread_resolved_without_id(thread);
+        }
     }
 
     Ok(threads)
@@ -437,6 +440,13 @@ fn set_thread_resolution(thread: &mut ReviewThread, is_resolved: bool, thread_id
     thread.thread_id = Some(thread_id.to_owned());
     for reply in &mut thread.replies {
         set_thread_resolution(reply, is_resolved, thread_id);
+    }
+}
+
+fn set_thread_resolved_without_id(thread: &mut ReviewThread) {
+    thread.is_resolved = true;
+    for reply in &mut thread.replies {
+        set_thread_resolved_without_id(reply);
     }
 }
 

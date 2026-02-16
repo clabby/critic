@@ -38,16 +38,17 @@ pub fn demo_pull_requests() -> Vec<PullRequestSummary> {
 
 /// Returns fixture comment data for a selected demo PR.
 pub fn demo_pull_request_data_for(pull: &PullRequestSummary) -> PullRequestData {
-    let root = ReviewThread {
+    let grouped_root = ReviewThread {
         thread_id: Some("PRRT_kwDOX-1234M4A9".to_owned()),
         is_resolved: false,
         comment: review_comment_fixture(
             1001,
             None,
+            Some(8101),
             "mock_reviewer_01",
-            "nit: consider renaming `MessageEnvelope` to `FrameEnvelope`",
+            "Test thread #1",
             "@@ -10,8 +10,11 @@\n pub type MessageId = u64;\n+/// Wraps transport metadata with decoded payload.\n pub struct MessageEnvelope {\n     pub id: MessageId,\n     pub body: Vec<u8>,\n }\n",
-            "src/codec/message.rs",
+            "src/app/editor.rs",
             Some(14),
         ),
         replies: vec![ReviewThread {
@@ -56,27 +57,45 @@ pub fn demo_pull_request_data_for(pull: &PullRequestSummary) -> PullRequestData 
             comment: review_comment_fixture(
                 1002,
                 Some(1001),
+                Some(8101),
                 "mock_author_01",
-                "Agreed. `FrameEnvelope` makes call sites easier to read and clarifies payload ownership.",
+                "Following up on the editor changes.",
                 "",
-                "src/codec/message.rs",
+                "src/app/editor.rs",
                 Some(14),
             ),
             replies: vec![],
         }],
     };
 
-    let outdated = ReviewThread {
+    let grouped_resolved = ReviewThread {
         thread_id: Some("PRRT_kwDOX-1234M4B2".to_owned()),
-        is_resolved: false,
+        is_resolved: true,
         comment: review_comment_fixture(
             1003,
             None,
+            Some(8101),
             "mock_reviewer_02",
-            "This thread references an outdated diff context.",
+            "Resolved thread under the same review summary.",
             "",
-            "",
+            "src/app/editor.rs",
+            Some(22),
+        ),
+        replies: vec![],
+    };
+
+    let standalone = ReviewThread {
+        thread_id: Some("PRRT_kwDOX-1234M4C7".to_owned()),
+        is_resolved: false,
+        comment: review_comment_fixture(
+            1004,
             None,
+            None,
+            "mock_reviewer_04",
+            "Standalone review thread not linked to a review summary.",
+            "@@ -31,2 +33,3 @@\n+ println!(\"debug\");\n",
+            "src/codec/mod.rs",
+            Some(33),
         ),
         replies: vec![],
     };
@@ -88,21 +107,32 @@ pub fn demo_pull_request_data_for(pull: &PullRequestSummary) -> PullRequestData 
         head_ref: pull.head_ref.clone(),
         base_ref: pull.base_ref.clone(),
         changed_files: vec![
-            "src/codec/message.rs".to_owned(),
+            "src/app/editor.rs".to_owned(),
             "src/codec/mod.rs".to_owned(),
         ],
         comments: vec![
-            PullRequestComment::ReviewThread(Box::new(root)),
-            PullRequestComment::ReviewThread(Box::new(outdated)),
+            PullRequestComment::ReviewSummary(Box::new(review_summary_fixture(
+                8101,
+                "mock_reviewer_03",
+                "Test meta comment",
+            ))),
+            PullRequestComment::ReviewThread(Box::new(grouped_root)),
+            PullRequestComment::ReviewThread(Box::new(grouped_resolved)),
             PullRequestComment::IssueComment(Box::new(issue_comment_fixture(
                 7001,
                 "mock_maintainer",
                 "Looks good overall; I just left one small naming suggestion.",
             ))),
             PullRequestComment::ReviewSummary(Box::new(review_summary_fixture(
-                8101,
-                "mock_reviewer_03",
-                "Approved after the naming update.",
+                8102,
+                "mock_reviewer_05",
+                "Standalone top-level review comment (no sub-threads).",
+            ))),
+            PullRequestComment::ReviewThread(Box::new(standalone)),
+            PullRequestComment::ReviewSummary(Box::new(review_summary_fixture(
+                8103,
+                "mock_reviewer_06",
+                "Another standalone review summary.",
             ))),
         ],
     }
@@ -111,6 +141,7 @@ pub fn demo_pull_request_data_for(pull: &PullRequestSummary) -> PullRequestData 
 fn review_comment_fixture(
     id: u64,
     in_reply_to_id: Option<u64>,
+    pull_request_review_id: Option<u64>,
     author: &str,
     body: &str,
     diff_hunk: &str,
@@ -137,6 +168,9 @@ fn review_comment_fixture(
 
     if let Some(reply_to) = in_reply_to_id {
         payload["in_reply_to_id"] = json!(reply_to);
+    }
+    if let Some(review_id) = pull_request_review_id {
+        payload["pull_request_review_id"] = json!(review_id);
     }
 
     serde_json::from_value(payload).expect("valid review comment fixture")

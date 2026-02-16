@@ -115,15 +115,41 @@ fn render_left_pane(
                         Span::raw("  "),
                         Span::styled("issue", theme::issue()),
                     ])),
-                    ListNodeKind::Review => ListItem::new(Line::from(vec![
-                        Span::styled(
-                            format!("{indent}• @{} ", node.comment.author()),
-                            theme::issue(),
-                        ),
-                        Span::raw(short_preview(node.comment.body(), 58)),
-                        Span::raw("  "),
-                        Span::styled("review", theme::issue()),
-                    ])),
+                    ListNodeKind::Review => {
+                        if node.key.starts_with("review-group:") {
+                            let icon = if review.is_collapsed(&node.key) {
+                                "▸"
+                            } else {
+                                "▾"
+                            };
+                            let status = if node.is_resolved { "resolved" } else { "open" };
+                            let status_style = if node.is_resolved {
+                                theme::resolved_thread()
+                            } else {
+                                theme::open_thread()
+                            };
+
+                            ListItem::new(Line::from(vec![
+                                Span::styled(
+                                    format!("{indent}{icon} @{} ", node.comment.author()),
+                                    theme::title(),
+                                ),
+                                Span::raw(short_preview(node.comment.body(), 56)),
+                                Span::raw("  "),
+                                Span::styled(format!("[{status}]"), status_style),
+                            ]))
+                        } else {
+                            ListItem::new(Line::from(vec![
+                                Span::styled(
+                                    format!("{indent}• @{} ", node.comment.author()),
+                                    theme::issue(),
+                                ),
+                                Span::raw(short_preview(node.comment.body(), 58)),
+                                Span::raw("  "),
+                                Span::styled("review", theme::issue()),
+                            ]))
+                        }
+                    }
                 }
             })
             .collect()
@@ -157,6 +183,9 @@ fn render_right_pane(
         match (&node.kind, &node.comment) {
             (ListNodeKind::Issue, CommentRef::Issue(issue)) => {
                 render_issue_preview(markdown, issue)
+            }
+            (ListNodeKind::Issue, CommentRef::ReviewSummary(review)) => {
+                render_review_summary_preview(markdown, review)
             }
             (ListNodeKind::Review, CommentRef::ReviewSummary(review)) => {
                 render_review_summary_preview(markdown, review)

@@ -7,7 +7,10 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{
+    Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
+    ScrollbarState,
+};
 
 pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let rows = Layout::vertical([Constraint::Length(3), Constraint::Min(6)]).split(area);
@@ -68,6 +71,15 @@ fn render_results(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         ))
         .borders(Borders::ALL)
         .border_style(theme::border());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let (list_area, scrollbar_area) = if inner.width > 1 {
+        let columns = Layout::horizontal([Constraint::Min(1), Constraint::Length(1)]).split(inner);
+        (columns[0], Some(columns[1]))
+    } else {
+        (inner, None)
+    };
 
     let items: Vec<ListItem<'static>> = if state.search_results.is_empty() {
         vec![ListItem::new(Line::from(vec![Span::styled(
@@ -94,7 +106,6 @@ fn render_results(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     };
 
     let list = List::new(items)
-        .block(block)
         .highlight_style(theme::selected())
         .highlight_symbol("▸ ");
 
@@ -103,5 +114,25 @@ fn render_results(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         list_state.select(Some(state.search_selected));
     }
 
-    frame.render_stateful_widget(list, area, &mut list_state);
+    frame.render_stateful_widget(list, list_area, &mut list_state);
+
+    let viewport_height = usize::from(list_area.height);
+    let content_height = state.search_results.len();
+
+    if content_height > viewport_height {
+        if let Some(scrollbar_area) = scrollbar_area {
+            let max_scroll = content_height.saturating_sub(viewport_height);
+            let scroll = list_state.offset().min(max_scroll);
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None)
+                .track_style(theme::dim())
+                .thumb_style(theme::title());
+            let scroll_positions = max_scroll.saturating_add(1);
+            let mut scrollbar_state = ScrollbarState::new(scroll_positions)
+                .viewport_content_length(viewport_height)
+                .position(scroll);
+            frame.render_stateful_widget(scrollbar, scrollbar_area, &mut scrollbar_state);
+        }
+    }
 }
