@@ -76,13 +76,67 @@ fn render_left_pane(frame: &mut Frame<'_>, area: Rect, review: &ReviewScreenStat
     }
 
     let comments_area = *sections.last().unwrap_or(&area);
+    let comments_title = if review.thread_search_query().trim().is_empty() {
+        format!(" Comments ({}) ", review.nodes.len())
+    } else {
+        format!(
+            " Comments ({}/{}) ",
+            review.nodes.len(),
+            review.thread_node_count()
+        )
+    };
     let block = Block::default()
-        .title(Span::styled(
-            format!(" Comments ({}) ", review.nodes.len()),
-            theme::title(),
-        ))
+        .title(Span::styled(comments_title, theme::title()))
         .borders(Borders::ALL)
         .border_style(theme::border());
+    let inner = block.inner(comments_area);
+    frame.render_widget(block, comments_area);
+
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let sections = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(inner);
+    let search_area = sections[0];
+    let body_area = sections[1];
+
+    let focused = review.is_thread_search_focused();
+    let title_style = if focused {
+        theme::info()
+    } else {
+        theme::title()
+    };
+    let search_block = Block::default()
+        .title(Span::styled(" Comment Search ", title_style))
+        .borders(Borders::ALL)
+        .border_style(if focused {
+            theme::open_thread()
+        } else {
+            theme::border()
+        });
+    let search_line = if review.thread_search_query().is_empty() {
+        Line::from(vec![
+            Span::raw("  query: "),
+            Span::styled(
+                if focused {
+                    "(type to filter comments)"
+                } else {
+                    "(press [s] or [/] to search comments)"
+                },
+                theme::dim(),
+            ),
+        ])
+    } else {
+        let mut line = vec![
+            Span::raw("  query: "),
+            Span::styled(review.thread_search_query().to_owned(), theme::text()),
+        ];
+        if focused {
+            line.push(Span::styled(" |", theme::open_thread()));
+        }
+        Line::from(line)
+    };
+    frame.render_widget(Paragraph::new(search_line).block(search_block), search_area);
 
     let items: Vec<ListItem<'static>> = if review.nodes.is_empty() {
         vec![ListItem::new(Line::from(vec![Span::styled(
@@ -185,7 +239,6 @@ fn render_left_pane(frame: &mut Frame<'_>, area: Rect, review: &ReviewScreenStat
     };
 
     let list = List::new(items)
-        .block(block)
         .highlight_style(theme::selected())
         .highlight_symbol("▌ ");
 
@@ -194,7 +247,7 @@ fn render_left_pane(frame: &mut Frame<'_>, area: Rect, review: &ReviewScreenStat
         list_state.select(Some(review.selected_row));
     }
 
-    frame.render_stateful_widget(list, comments_area, &mut list_state);
+    frame.render_stateful_widget(list, body_area, &mut list_state);
 }
 
 fn render_pending_review_sidebar(frame: &mut Frame<'_>, area: Rect, review: &ReviewScreenState) {

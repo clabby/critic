@@ -613,6 +613,27 @@ fn handle_review_key_event(
             .as_ref()
             .is_some_and(|review| review.has_diff_selection_anchor());
 
+    if active_tab == ReviewTab::Threads
+        && state
+            .review
+            .as_ref()
+            .is_some_and(|review| review.is_thread_search_focused())
+    {
+        if let Some(review) = state.review.as_mut() {
+            match key.code {
+                KeyCode::Esc | KeyCode::Enter => review.unfocus_thread_search(),
+                KeyCode::Backspace => review.thread_search_backspace(),
+                KeyCode::Char(ch) => {
+                    if !ch.is_control() {
+                        review.thread_search_push_char(ch);
+                    }
+                }
+                _ => {}
+            }
+        }
+        return;
+    }
+
     if active_tab == ReviewTab::Diff
         && state
             .review
@@ -859,7 +880,18 @@ fn handle_review_key_event(
             }
         }
         KeyCode::Char('s') => match active_tab {
-            ReviewTab::Threads => send_selected_reply(state, context, tx),
+            ReviewTab::Threads => {
+                let can_send_reply = state
+                    .review
+                    .as_ref()
+                    .and_then(|review| review.selected_reply_draft())
+                    .is_some_and(|draft| !draft.trim().is_empty());
+                if can_send_reply {
+                    send_selected_reply(state, context, tx);
+                } else if let Some(review) = state.review.as_mut() {
+                    review.focus_thread_search();
+                }
+            }
             ReviewTab::Diff => {
                 if let Some(review) = state.review.as_mut()
                     && !review.is_diff_content_focused()
@@ -869,6 +901,13 @@ fn handle_review_key_event(
                 }
             }
         },
+        KeyCode::Char('/') => {
+            if active_tab == ReviewTab::Threads
+                && let Some(review) = state.review.as_mut()
+            {
+                review.focus_thread_search();
+            }
+        }
         KeyCode::Char('C') => {
             if is_visual_mode {
                 return;

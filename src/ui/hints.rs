@@ -88,6 +88,10 @@ fn review_diff_hints(review: &ReviewScreenState) -> String {
 }
 
 fn review_thread_hints(review: &ReviewScreenState) -> String {
+    if review.is_thread_search_focused() {
+        return "[type] edit comment filter  [backspace] delete  [enter/esc] unfocus".to_owned();
+    }
+
     let mut parts = vec![
         "[S-tab] show diff".to_owned(),
         "[j/k/up/down] navigate".to_owned(),
@@ -114,6 +118,10 @@ fn review_thread_hints(review: &ReviewScreenState) -> String {
         }
     }
 
+    let has_sendable_reply = review
+        .selected_reply_draft()
+        .is_some_and(|draft| !draft.trim().is_empty());
+
     if let Some(context) = review.selected_thread_context() {
         if context.thread_id.is_some() {
             let thread_action = if context.is_resolved {
@@ -124,14 +132,17 @@ fn review_thread_hints(review: &ReviewScreenState) -> String {
             parts.push(thread_action.to_owned());
         }
 
-        if review
-            .selected_reply_draft()
-            .is_some_and(|draft| !draft.trim().is_empty())
-        {
+        if has_sendable_reply {
             parts.push("[e/s/x] reply".to_owned());
         } else {
             parts.push("[e] edit reply".to_owned());
         }
+    }
+
+    if has_sendable_reply {
+        parts.push("[/] search comments".to_owned());
+    } else {
+        parts.push("[s] search comments".to_owned());
     }
 
     if review.pending_review_comment_count() > 0 {

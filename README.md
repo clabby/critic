@@ -117,12 +117,21 @@ Use this tab for conversational review: read threads, inspect context, reply, an
 | `f` | Show/hide resolved threads |
 | `t` | Resolve/unresolve selected thread |
 | `e` | Edit staged reply |
-| `s` | Send staged reply |
+| `s` | Send staged reply (when present), otherwise focus comment search |
+| `/` | Focus comment search |
 | `x` | Clear staged reply |
 | `C` / `A` / `X` | Submit review (comment / approve / request changes) |
 | `b` | Back to PR search |
 | `R` | Refresh PR data |
 | `q` | Quit |
+
+When comment search is focused:
+
+| Key | Action |
+| --- | --- |
+| `type` | Edit query |
+| `backspace` | Delete previous character |
+| `enter` / `esc` | Unfocus comment search |
 
 #### Diff Review Tab
 

@@ -2,10 +2,12 @@
 
 mod diff_tree;
 mod thread_nodes;
+mod thread_search;
 
 use self::{
     diff_tree::{build_diff_tree_rows, filter_diff_tree_rows},
     thread_nodes::{append_thread_nodes, is_review_group_key, review_group_key, thread_key},
+    thread_search::filter_thread_nodes,
 };
 use crate::{
     domain::{
@@ -223,10 +225,13 @@ pub struct ReviewScreenState {
     pending_preview_comment_id: Option<u64>,
     pub selected_hunk: usize,
     pub diff_viewport_height: u16,
+    pub thread_search_focused: bool,
+    pub thread_search_query: String,
     pub diff_search_focused: bool,
     pub diff_search_query: String,
     pub diff_tree_rows_cache: Vec<DiffTreeRow>,
     pub pending_review_comments: Vec<PendingReviewCommentDraft>,
+    thread_nodes_cache: Vec<ListNode>,
     pub nodes: Vec<ListNode>,
     pub reply_drafts: HashMap<String, String>,
     next_pending_review_comment_id: u64,
@@ -262,10 +267,13 @@ impl ReviewScreenState {
             pending_preview_comment_id: None,
             selected_hunk: 0,
             diff_viewport_height: 0,
+            thread_search_focused: false,
+            thread_search_query: String::new(),
             diff_search_focused: false,
             diff_search_query: String::new(),
             diff_tree_rows_cache: Vec::new(),
             pending_review_comments: Vec::new(),
+            thread_nodes_cache: Vec::new(),
             nodes: Vec::new(),
             reply_drafts: HashMap::new(),
             next_pending_review_comment_id: 1,
@@ -291,7 +299,7 @@ impl ReviewScreenState {
 
     pub fn rebuild_nodes(&mut self) {
         let selected_key = self.selected_node().map(|node| node.key.clone());
-        self.nodes.clear();
+        self.thread_nodes_cache.clear();
         self.threads_by_key.clear();
 
         let summary_review_ids: HashSet<u64> = self
@@ -339,7 +347,7 @@ impl ReviewScreenState {
                         continue;
                     }
                     append_thread_nodes(
-                        &mut self.nodes,
+                        &mut self.thread_nodes_cache,
                         &mut self.threads_by_key,
                         &self.collapsed,
                         thread,
@@ -347,7 +355,7 @@ impl ReviewScreenState {
                     );
                 }
                 PullRequestComment::IssueComment(comment) => {
-                    self.nodes.push(ListNode {
+                    self.thread_nodes_cache.push(ListNode {
                         key: format!("issue:{}", comment.id),
                         kind: ListNodeKind::Issue,
                         depth: 0,
@@ -361,7 +369,7 @@ impl ReviewScreenState {
                     let review_id = review.id.into_inner();
                     let summary_threads = grouped_threads.remove(&review_id).unwrap_or_default();
                     if summary_threads.is_empty() {
-                        self.nodes.push(ListNode {
+                        self.thread_nodes_cache.push(ListNode {
                             key: format!("review-issue:{}", review.id),
                             kind: ListNodeKind::Issue,
                             depth: 0,
@@ -381,7 +389,7 @@ impl ReviewScreenState {
                     }
 
                     let group_key = review_group_key(review_id);
-                    self.nodes.push(ListNode {
+                    self.thread_nodes_cache.push(ListNode {
                         key: group_key.clone(),
                         kind: ListNodeKind::Review,
                         depth: 0,
@@ -400,7 +408,7 @@ impl ReviewScreenState {
                             continue;
                         }
                         append_thread_nodes(
-                            &mut self.nodes,
+                            &mut self.thread_nodes_cache,
                             &mut self.threads_by_key,
                             &self.collapsed,
                             thread,
@@ -411,12 +419,18 @@ impl ReviewScreenState {
             }
         }
 
+        self.recompute_thread_nodes_cache(selected_key.as_deref());
+    }
+
+    fn recompute_thread_nodes_cache(&mut self, selected_key: Option<&str>) {
+        self.nodes = filter_thread_nodes(&self.thread_nodes_cache, &self.thread_search_query);
+
         if let Some(previous_key) = selected_key {
-            if let Some(index) = self.nodes.iter().position(|node| node.key == previous_key) {
-                self.selected_row = index;
-            } else {
-                self.selected_row = 0;
-            }
+            self.selected_row = self
+                .nodes
+                .iter()
+                .position(|node| node.key == previous_key)
+                .unwrap_or(0);
         } else {
             self.selected_row = 0;
         }
@@ -462,6 +476,38 @@ impl ReviewScreenState {
 
     pub fn clear_reply_draft(&mut self, root_key: &str) {
         self.reply_drafts.remove(root_key);
+    }
+
+    pub fn focus_thread_search(&mut self) {
+        self.thread_search_focused = true;
+    }
+
+    pub fn unfocus_thread_search(&mut self) {
+        self.thread_search_focused = false;
+    }
+
+    pub fn is_thread_search_focused(&self) -> bool {
+        self.thread_search_focused
+    }
+
+    pub fn thread_search_query(&self) -> &str {
+        &self.thread_search_query
+    }
+
+    pub fn thread_search_push_char(&mut self, ch: char) {
+        self.thread_search_query.push(ch);
+        let selected_key = self.selected_node().map(|node| node.key.clone());
+        self.recompute_thread_nodes_cache(selected_key.as_deref());
+    }
+
+    pub fn thread_search_backspace(&mut self) {
+        self.thread_search_query.pop();
+        let selected_key = self.selected_node().map(|node| node.key.clone());
+        self.recompute_thread_nodes_cache(selected_key.as_deref());
+    }
+
+    pub fn thread_node_count(&self) -> usize {
+        self.thread_nodes_cache.len()
     }
 
     pub fn move_down(&mut self) {
@@ -1796,9 +1842,11 @@ mod tests {
         DiffFocus, PendingReviewCommentDraft, ReviewScreenState, ReviewTab, build_diff_tree_rows,
     };
     use crate::domain::{
-        PullRequestData, PullRequestDiffData, PullRequestDiffFile, PullRequestDiffFileStatus,
-        PullRequestDiffRow, PullRequestDiffRowKind, PullRequestSummary,
+        PullRequestComment, PullRequestData, PullRequestDiffData, PullRequestDiffFile,
+        PullRequestDiffFileStatus, PullRequestDiffRow, PullRequestDiffRowKind, PullRequestSummary,
+        ReviewComment, ReviewThread,
     };
+    use serde_json::json;
     use std::collections::HashSet;
 
     fn diff_file(path: &str) -> PullRequestDiffFile {
@@ -1847,6 +1895,10 @@ mod tests {
     }
 
     fn build_review_state() -> ReviewScreenState {
+        build_review_state_with_comments(Vec::new())
+    }
+
+    fn build_review_state_with_comments(comments: Vec<PullRequestComment>) -> ReviewScreenState {
         let pull = PullRequestSummary {
             owner: "owner".to_owned(),
             repo: "repo".to_owned(),
@@ -1869,10 +1921,53 @@ mod tests {
             head_sha: "headsha".to_owned(),
             base_sha: "basesha".to_owned(),
             changed_files: Vec::new(),
-            comments: Vec::new(),
+            comments,
         };
 
         ReviewScreenState::new(pull, data)
+    }
+
+    fn review_comment(id: u64, body: &str, in_reply_to_id: Option<u64>) -> ReviewComment {
+        let mut payload = json!({
+            "url": format!("https://example.invalid/comments/{id}"),
+            "id": id,
+            "node_id": format!("PRRC_{id}"),
+            "diff_hunk": "@@ -1,1 +1,1 @@",
+            "path": "src/lib.rs",
+            "commit_id": "deadbeef",
+            "original_commit_id": "deadbeef",
+            "body": body,
+            "created_at": "2026-02-01T00:00:00Z",
+            "updated_at": "2026-02-01T00:00:00Z",
+            "html_url": format!("https://example.invalid/comments/{id}"),
+            "_links": {},
+            "line": 1
+        });
+
+        if let Some(reply_to) = in_reply_to_id {
+            payload["in_reply_to_id"] = json!(reply_to);
+        }
+
+        serde_json::from_value(payload).expect("valid pull review comment fixture")
+    }
+
+    fn review_thread_with_reply(
+        root_id: u64,
+        root_body: &str,
+        reply_id: u64,
+        reply_body: &str,
+    ) -> ReviewThread {
+        ReviewThread {
+            thread_id: Some(format!("THREAD_{root_id}")),
+            is_resolved: false,
+            comment: review_comment(root_id, root_body, None),
+            replies: vec![ReviewThread {
+                thread_id: None,
+                is_resolved: false,
+                comment: review_comment(reply_id, reply_body, Some(root_id)),
+                replies: Vec::new(),
+            }],
+        }
     }
 
     #[test]
@@ -2040,6 +2135,58 @@ mod tests {
             row.is_directory || row.key.contains("docs/readme.md") || row.key.contains("docs")
         }));
         assert_eq!(review.selected_diff_file, 1);
+    }
+
+    #[test]
+    fn thread_search_filters_rows_and_keeps_parent_context() {
+        let review_thread = review_thread_with_reply(1, "root message", 2, "needle reply text");
+        let mut review = build_review_state_with_comments(vec![PullRequestComment::ReviewThread(
+            Box::new(review_thread),
+        )]);
+
+        for ch in "needle".chars() {
+            review.thread_search_push_char(ch);
+        }
+
+        assert_eq!(review.nodes.len(), 2);
+        assert_eq!(review.nodes[0].depth, 0);
+        assert_eq!(review.nodes[1].depth, 1);
+        assert!(review.nodes[1].comment.body().contains("needle"));
+    }
+
+    #[test]
+    fn thread_search_realigns_selection_when_current_row_is_filtered_out() {
+        let first = ReviewThread {
+            thread_id: Some("THREAD_1".to_owned()),
+            is_resolved: false,
+            comment: review_comment(1, "alpha root", None),
+            replies: Vec::new(),
+        };
+        let second = ReviewThread {
+            thread_id: Some("THREAD_2".to_owned()),
+            is_resolved: false,
+            comment: review_comment(2, "beta root", None),
+            replies: Vec::new(),
+        };
+        let mut review = build_review_state_with_comments(vec![
+            PullRequestComment::ReviewThread(Box::new(first)),
+            PullRequestComment::ReviewThread(Box::new(second)),
+        ]);
+
+        review.move_down();
+        assert_eq!(review.selected_row, 1);
+
+        for ch in "alpha".chars() {
+            review.thread_search_push_char(ch);
+        }
+
+        assert_eq!(review.nodes.len(), 1);
+        assert_eq!(review.selected_row, 0);
+        assert!(
+            review
+                .selected_node()
+                .is_some_and(|node| node.key.contains("THREAD_1"))
+        );
     }
 
     #[test]
