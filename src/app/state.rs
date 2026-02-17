@@ -1,9 +1,12 @@
 //! Application state models and route-local behavior.
 
 mod diff_tree;
+mod search_input;
 mod thread_nodes;
 mod thread_search;
+mod tree_filter;
 
+pub use self::search_input::SearchInputState;
 use self::{
     diff_tree::{build_diff_tree_rows, filter_diff_tree_rows},
     thread_nodes::{append_thread_nodes, is_review_group_key, review_group_key, thread_key},
@@ -29,8 +32,7 @@ pub struct AppState {
     pub error_message: Option<String>,
     pub repository_label: String,
     pub pull_requests: Vec<PullRequestSummary>,
-    pub search_focused: bool,
-    pub search_query: String,
+    pub search_input: SearchInputState,
     pub search_results: Vec<usize>,
     pub search_selected: usize,
     pub review: Option<ReviewScreenState>,
@@ -45,8 +47,7 @@ impl Default for AppState {
             error_message: None,
             repository_label: "(resolving repository)".to_owned(),
             pull_requests: Vec::new(),
-            search_focused: false,
-            search_query: String::new(),
+            search_input: SearchInputState::default(),
             search_results: Vec::new(),
             search_selected: 0,
             review: None,
@@ -67,7 +68,7 @@ impl AppState {
     }
 
     pub fn recompute_search(&mut self) {
-        self.search_results = rank_pull_requests(&self.search_query, &self.pull_requests)
+        self.search_results = rank_pull_requests(self.search_input.query(), &self.pull_requests)
             .into_iter()
             .map(|result| result.index)
             .collect();
@@ -82,26 +83,20 @@ impl AppState {
         self.pull_requests.get(index)
     }
 
-    pub fn search_push_char(&mut self, ch: char) {
-        self.search_query.push(ch);
-        self.recompute_search();
-    }
-
-    pub fn search_backspace(&mut self) {
-        self.search_query.pop();
-        self.recompute_search();
-    }
-
     pub fn focus_search(&mut self) {
-        self.search_focused = true;
-    }
-
-    pub fn unfocus_search(&mut self) {
-        self.search_focused = false;
+        self.search_input.focus();
     }
 
     pub fn is_search_focused(&self) -> bool {
-        self.search_focused
+        self.search_input.is_focused()
+    }
+
+    pub fn search_query(&self) -> &str {
+        self.search_input.query()
+    }
+
+    pub fn search_input_mut(&mut self) -> &mut SearchInputState {
+        &mut self.search_input
     }
 
     pub fn search_move_down(&mut self) {
@@ -129,7 +124,7 @@ impl AppState {
 
     pub fn back_to_search(&mut self) {
         self.route = Route::Search;
-        self.search_focused = false;
+        self.search_input.unfocus();
     }
 
     pub fn begin_operation(&mut self, label: impl Into<String>) {
@@ -225,10 +220,8 @@ pub struct ReviewScreenState {
     pending_preview_comment_id: Option<u64>,
     pub selected_hunk: usize,
     pub diff_viewport_height: u16,
-    pub thread_search_focused: bool,
-    pub thread_search_query: String,
-    pub diff_search_focused: bool,
-    pub diff_search_query: String,
+    pub thread_search: SearchInputState,
+    pub diff_search: SearchInputState,
     pub diff_tree_rows_cache: Vec<DiffTreeRow>,
     pub pending_review_comments: Vec<PendingReviewCommentDraft>,
     thread_nodes_cache: Vec<ListNode>,
@@ -267,10 +260,8 @@ impl ReviewScreenState {
             pending_preview_comment_id: None,
             selected_hunk: 0,
             diff_viewport_height: 0,
-            thread_search_focused: false,
-            thread_search_query: String::new(),
-            diff_search_focused: false,
-            diff_search_query: String::new(),
+            thread_search: SearchInputState::default(),
+            diff_search: SearchInputState::default(),
             diff_tree_rows_cache: Vec::new(),
             pending_review_comments: Vec::new(),
             thread_nodes_cache: Vec::new(),
@@ -423,7 +414,7 @@ impl ReviewScreenState {
     }
 
     fn recompute_thread_nodes_cache(&mut self, selected_key: Option<&str>) {
-        self.nodes = filter_thread_nodes(&self.thread_nodes_cache, &self.thread_search_query);
+        self.nodes = filter_thread_nodes(&self.thread_nodes_cache, self.thread_search.query());
 
         if let Some(previous_key) = selected_key {
             self.selected_row = self
@@ -479,29 +470,22 @@ impl ReviewScreenState {
     }
 
     pub fn focus_thread_search(&mut self) {
-        self.thread_search_focused = true;
-    }
-
-    pub fn unfocus_thread_search(&mut self) {
-        self.thread_search_focused = false;
+        self.thread_search.focus();
     }
 
     pub fn is_thread_search_focused(&self) -> bool {
-        self.thread_search_focused
+        self.thread_search.is_focused()
     }
 
     pub fn thread_search_query(&self) -> &str {
-        &self.thread_search_query
+        self.thread_search.query()
     }
 
-    pub fn thread_search_push_char(&mut self, ch: char) {
-        self.thread_search_query.push(ch);
-        let selected_key = self.selected_node().map(|node| node.key.clone());
-        self.recompute_thread_nodes_cache(selected_key.as_deref());
+    pub fn thread_search_input_mut(&mut self) -> &mut SearchInputState {
+        &mut self.thread_search
     }
 
-    pub fn thread_search_backspace(&mut self) {
-        self.thread_search_query.pop();
+    pub fn refresh_thread_search_results(&mut self) {
         let selected_key = self.selected_node().map(|node| node.key.clone());
         self.recompute_thread_nodes_cache(selected_key.as_deref());
     }
@@ -660,7 +644,7 @@ impl ReviewScreenState {
         self.selected_hunk = 0;
         self.diff_viewport_height = 0;
         self.diff_collapsed_dirs.clear();
-        self.diff_search_focused = false;
+        self.diff_search = SearchInputState::default();
         self.diff_tree_rows_cache.clear();
     }
 
@@ -747,15 +731,11 @@ impl ReviewScreenState {
     }
 
     pub fn focus_diff_search(&mut self) {
-        self.diff_search_focused = true;
-    }
-
-    pub fn unfocus_diff_search(&mut self) {
-        self.diff_search_focused = false;
+        self.diff_search.focus();
     }
 
     pub fn is_diff_search_focused(&self) -> bool {
-        self.diff_search_focused
+        self.diff_search.is_focused()
     }
 
     pub fn focus_diff_files(&mut self) {
@@ -771,17 +751,14 @@ impl ReviewScreenState {
     }
 
     pub fn diff_search_query(&self) -> &str {
-        &self.diff_search_query
+        self.diff_search.query()
     }
 
-    pub fn diff_search_push_char(&mut self, ch: char) {
-        self.diff_search_query.push(ch);
-        self.recompute_diff_tree_rows_cache();
-        self.realign_diff_selection_for_filter();
+    pub fn diff_search_input_mut(&mut self) -> &mut SearchInputState {
+        &mut self.diff_search
     }
 
-    pub fn diff_search_backspace(&mut self) {
-        self.diff_search_query.pop();
+    pub fn refresh_diff_search_results(&mut self) {
         self.recompute_diff_tree_rows_cache();
         self.realign_diff_selection_for_filter();
     }
@@ -1589,7 +1566,7 @@ impl ReviewScreenState {
     }
 
     fn ensure_diff_file_expanded(&mut self, file_index: usize) {
-        if !self.diff_search_query.trim().is_empty() {
+        if !self.diff_search.query().trim().is_empty() {
             return;
         }
 
@@ -1657,11 +1634,11 @@ impl ReviewScreenState {
             return;
         };
 
-        self.diff_tree_rows_cache = if self.diff_search_query.trim().is_empty() {
+        self.diff_tree_rows_cache = if self.diff_search.is_empty() {
             build_diff_tree_rows(diff, &self.diff_collapsed_dirs)
         } else {
             let expanded_rows = build_diff_tree_rows(diff, &HashSet::new());
-            filter_diff_tree_rows(&expanded_rows, diff, &self.diff_search_query)
+            filter_diff_tree_rows(&expanded_rows, diff, self.diff_search.query())
         };
     }
 }
@@ -2126,8 +2103,10 @@ mod tests {
             files: vec![diff_file("src/lib.rs"), diff_file("docs/readme.md")],
         });
 
-        review.diff_search_push_char('d');
-        review.diff_search_push_char('o');
+        review.diff_search_input_mut().push_char('d');
+        review.refresh_diff_search_results();
+        review.diff_search_input_mut().push_char('o');
+        review.refresh_diff_search_results();
 
         let rows = review.diff_tree_rows();
         assert!(!rows.is_empty());
@@ -2145,7 +2124,8 @@ mod tests {
         )]);
 
         for ch in "needle".chars() {
-            review.thread_search_push_char(ch);
+            review.thread_search_input_mut().push_char(ch);
+            review.refresh_thread_search_results();
         }
 
         assert_eq!(review.nodes.len(), 2);
@@ -2177,7 +2157,8 @@ mod tests {
         assert_eq!(review.selected_row, 1);
 
         for ch in "alpha".chars() {
-            review.thread_search_push_char(ch);
+            review.thread_search_input_mut().push_char(ch);
+            review.refresh_thread_search_results();
         }
 
         assert_eq!(review.nodes.len(), 1);

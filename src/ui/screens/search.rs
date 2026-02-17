@@ -3,16 +3,17 @@
 use crate::{
     app::state::AppState,
     domain::PullRequestReviewStatus,
-    ui::{components::shared::short_timestamp, theme},
+    ui::{
+        components::{search_box, shared::short_timestamp},
+        theme,
+    },
 };
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
-    style::Style,
     text::{Line, Span},
     widgets::{
-        Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
-        ScrollbarState,
+        Block, Borders, List, ListItem, ListState, Scrollbar, ScrollbarOrientation, ScrollbarState,
     },
 };
 
@@ -24,45 +25,17 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 }
 
 fn render_search_box(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
-    let focused = state.is_search_focused();
-    let title_style = if focused {
-        theme::info()
-    } else {
-        theme::title()
-    };
-    let block = Block::default()
-        .title(Span::styled(" PR Search ", title_style))
-        .borders(Borders::ALL)
-        .border_style(if focused {
-            theme::open_thread()
-        } else {
-            theme::border()
-        });
-
-    let text = if state.search_query.is_empty() {
-        vec![Line::from(vec![
-            Span::raw("  query: "),
-            Span::styled(
-                if focused {
-                    "(type to filter open pull requests)"
-                } else {
-                    "(press [s] to focus search)"
-                },
-                theme::dim(),
-            ),
-        ])]
-    } else {
-        let mut line = vec![
-            Span::raw("  query: "),
-            Span::styled(state.search_query.clone(), Style::default()),
-        ];
-        if focused {
-            line.push(Span::styled(" |", theme::open_thread()));
-        }
-        vec![Line::from(line)]
-    };
-
-    frame.render_widget(Paragraph::new(text).block(block), area);
+    search_box::render(
+        frame,
+        area,
+        search_box::SearchBoxProps {
+            title: " PR Search ",
+            query: state.search_query(),
+            focused: state.is_search_focused(),
+            focused_placeholder: "(type to filter open pull requests)",
+            unfocused_placeholder: "(press [s] to focus search)",
+        },
+    );
 }
 
 fn render_results(frame: &mut Frame<'_>, area: Rect, state: &AppState) {

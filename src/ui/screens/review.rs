@@ -8,7 +8,7 @@ use crate::{
         thread::{render_issue_preview, render_review_summary_preview, render_thread_preview},
     },
     ui::{
-        components::shared::short_preview,
+        components::{search_box, shared::short_preview},
         screens::review_diff::{self, DiffRowsRenderContext},
         theme,
     },
@@ -100,43 +100,17 @@ fn render_left_pane(frame: &mut Frame<'_>, area: Rect, review: &ReviewScreenStat
     let search_area = sections[0];
     let body_area = sections[1];
 
-    let focused = review.is_thread_search_focused();
-    let title_style = if focused {
-        theme::info()
-    } else {
-        theme::title()
-    };
-    let search_block = Block::default()
-        .title(Span::styled(" Comment Search ", title_style))
-        .borders(Borders::ALL)
-        .border_style(if focused {
-            theme::open_thread()
-        } else {
-            theme::border()
-        });
-    let search_line = if review.thread_search_query().is_empty() {
-        Line::from(vec![
-            Span::raw("  query: "),
-            Span::styled(
-                if focused {
-                    "(type to filter comments)"
-                } else {
-                    "(press [s] or [/] to search comments)"
-                },
-                theme::dim(),
-            ),
-        ])
-    } else {
-        let mut line = vec![
-            Span::raw("  query: "),
-            Span::styled(review.thread_search_query().to_owned(), theme::text()),
-        ];
-        if focused {
-            line.push(Span::styled(" |", theme::open_thread()));
-        }
-        Line::from(line)
-    };
-    frame.render_widget(Paragraph::new(search_line).block(search_block), search_area);
+    search_box::render(
+        frame,
+        search_area,
+        search_box::SearchBoxProps {
+            title: " Comment Search ",
+            query: review.thread_search_query(),
+            focused: review.is_thread_search_focused(),
+            focused_placeholder: "(type to filter comments)",
+            unfocused_placeholder: "(press [s] or [/] to search comments)",
+        },
+    );
 
     let items: Vec<ListItem<'static>> = if review.nodes.is_empty() {
         vec![ListItem::new(Line::from(vec![Span::styled(
@@ -402,46 +376,22 @@ fn render_diff_files(frame: &mut Frame<'_>, area: Rect, review: &ReviewScreenSta
         (None, sections[1])
     };
 
-    let focused = review.is_diff_search_focused();
-    let title_style = if focused {
-        theme::info()
+    let unfocused_placeholder = if review.is_diff_content_focused() {
+        "(focus files to search)"
     } else {
-        theme::title()
+        "(press [s] to search files)"
     };
-    let search_block = Block::default()
-        .title(Span::styled(" File Search ", title_style))
-        .borders(Borders::ALL)
-        .border_style(if focused {
-            theme::open_thread()
-        } else {
-            theme::border()
-        });
-    let search_line = if review.diff_search_query().is_empty() {
-        Line::from(vec![
-            Span::raw("  query: "),
-            Span::styled(
-                if focused {
-                    "(type to filter changed files)"
-                } else if review.is_diff_content_focused() {
-                    "(focus files to search)"
-                } else {
-                    "(press [s] to search files)"
-                },
-                theme::dim(),
-            ),
-        ])
-    } else {
-        let mut line = vec![
-            Span::raw("  query: "),
-            Span::styled(review.diff_search_query().to_owned(), theme::text()),
-        ];
-        if focused {
-            line.push(Span::styled(" |", theme::open_thread()));
-        }
-        Line::from(line)
-    };
-    let search_widget = Paragraph::new(search_line).block(search_block);
-    frame.render_widget(search_widget, search_area);
+    search_box::render(
+        frame,
+        search_area,
+        search_box::SearchBoxProps {
+            title: " File Search ",
+            query: review.diff_search_query(),
+            focused: review.is_diff_search_focused(),
+            focused_placeholder: "(type to filter changed files)",
+            unfocused_placeholder,
+        },
+    );
 
     if let Some(pending_area) = pending_area {
         render_pending_review_sidebar(frame, pending_area, review);

@@ -14,7 +14,9 @@ use crate::{
             spawn_load_pull_request_diff, spawn_load_pull_requests,
             spawn_load_specific_pull_request,
         },
-        state::{AppState, PendingReviewCommentSide, ReviewSubmissionEvent, ReviewTab},
+        state::{
+            AppState, PendingReviewCommentSide, ReviewSubmissionEvent, ReviewTab, SearchInputState,
+        },
     },
     config,
     domain::{CommentRef, PullRequestSummary, Route},
@@ -533,6 +535,24 @@ fn mouse_scroll_delta(kind: MouseEventKind) -> Option<MouseScrollDelta> {
     }
 }
 
+fn handle_search_input_edit_key(key: KeyEvent, input: &mut SearchInputState) -> bool {
+    match key.code {
+        KeyCode::Esc | KeyCode::Enter => {
+            input.unfocus();
+            false
+        }
+        KeyCode::Backspace => {
+            input.backspace();
+            true
+        }
+        KeyCode::Char(ch) if !ch.is_control() => {
+            input.push_char(ch);
+            true
+        }
+        _ => false,
+    }
+}
+
 fn handle_search_key_event(
     state: &mut AppState,
     context: &DataContext,
@@ -540,15 +560,8 @@ fn handle_search_key_event(
     key: KeyEvent,
 ) {
     if state.is_search_focused() {
-        match key.code {
-            KeyCode::Esc | KeyCode::Enter => state.unfocus_search(),
-            KeyCode::Backspace => state.search_backspace(),
-            KeyCode::Char(ch) => {
-                if !ch.is_control() {
-                    state.search_push_char(ch);
-                }
-            }
-            _ => {}
+        if handle_search_input_edit_key(key, state.search_input_mut()) {
+            state.recompute_search();
         }
         return;
     }
@@ -619,17 +632,10 @@ fn handle_review_key_event(
             .as_ref()
             .is_some_and(|review| review.is_thread_search_focused())
     {
-        if let Some(review) = state.review.as_mut() {
-            match key.code {
-                KeyCode::Esc | KeyCode::Enter => review.unfocus_thread_search(),
-                KeyCode::Backspace => review.thread_search_backspace(),
-                KeyCode::Char(ch) => {
-                    if !ch.is_control() {
-                        review.thread_search_push_char(ch);
-                    }
-                }
-                _ => {}
-            }
+        if let Some(review) = state.review.as_mut()
+            && handle_search_input_edit_key(key, review.thread_search_input_mut())
+        {
+            review.refresh_thread_search_results();
         }
         return;
     }
@@ -640,17 +646,10 @@ fn handle_review_key_event(
             .as_ref()
             .is_some_and(|review| review.is_diff_search_focused())
     {
-        if let Some(review) = state.review.as_mut() {
-            match key.code {
-                KeyCode::Esc | KeyCode::Enter => review.unfocus_diff_search(),
-                KeyCode::Backspace => review.diff_search_backspace(),
-                KeyCode::Char(ch) => {
-                    if !ch.is_control() {
-                        review.diff_search_push_char(ch);
-                    }
-                }
-                _ => {}
-            }
+        if let Some(review) = state.review.as_mut()
+            && handle_search_input_edit_key(key, review.diff_search_input_mut())
+        {
+            review.refresh_diff_search_results();
         }
         return;
     }

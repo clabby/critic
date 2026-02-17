@@ -1,4 +1,4 @@
-use super::DiffTreeRow;
+use super::{DiffTreeRow, tree_filter::filter_with_ancestors};
 use crate::domain::PullRequestDiffData;
 use std::collections::{BTreeMap, HashSet};
 
@@ -29,45 +29,23 @@ pub(super) fn filter_diff_tree_rows(
     diff: &PullRequestDiffData,
     query: &str,
 ) -> Vec<DiffTreeRow> {
-    let query = query.trim().to_ascii_lowercase();
-    if query.is_empty() {
-        return rows.to_vec();
-    }
-
-    let mut include = HashSet::<String>::new();
-    let mut parent_stack = Vec::<String>::new();
-
-    for row in rows {
-        while parent_stack.len() > row.depth {
-            parent_stack.pop();
-        }
-
-        if row.is_directory {
-            parent_stack.push(row.key.clone());
-            continue;
-        }
-
-        let matches = row
-            .file_index
-            .and_then(|file_index| diff.files.get(file_index))
-            .is_some_and(|file| file.path.to_ascii_lowercase().contains(&query));
-
-        if matches {
-            include.insert(row.key.clone());
-            for key in &parent_stack {
-                include.insert(key.clone());
-            }
-        }
-    }
-
-    rows.iter()
-        .filter(|row| include.contains(&row.key))
-        .cloned()
-        .map(|mut row| {
-            row.is_collapsed = false;
-            row
-        })
-        .collect()
+    filter_with_ancestors(
+        rows,
+        query,
+        |row| row.key.as_str(),
+        |row| row.depth,
+        |row, query| {
+            row.file_index
+                .and_then(|file_index| diff.files.get(file_index))
+                .is_some_and(|file| file.path.to_ascii_lowercase().contains(query))
+        },
+    )
+    .into_iter()
+    .map(|mut row| {
+        row.is_collapsed = false;
+        row
+    })
+    .collect()
 }
 
 fn insert_diff_path(root: &mut DiffTreeNode, path: &str, file_index: usize) {

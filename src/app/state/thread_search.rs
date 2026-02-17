@@ -1,35 +1,14 @@
+use super::tree_filter::filter_with_ancestors;
 use crate::domain::{CommentRef, ListNode};
-use std::collections::HashSet;
 
 pub(super) fn filter_thread_nodes(nodes: &[ListNode], query: &str) -> Vec<ListNode> {
-    let query = query.trim().to_ascii_lowercase();
-    if query.is_empty() {
-        return nodes.to_vec();
-    }
-
-    let mut include = HashSet::<String>::new();
-    let mut parent_stack = Vec::<String>::new();
-
-    for node in nodes {
-        while parent_stack.len() > node.depth {
-            parent_stack.pop();
-        }
-
-        if node_matches_query(node, &query) {
-            include.insert(node.key.clone());
-            for parent_key in &parent_stack {
-                include.insert(parent_key.clone());
-            }
-        }
-
-        parent_stack.push(node.key.clone());
-    }
-
-    nodes
-        .iter()
-        .filter(|node| include.contains(&node.key))
-        .cloned()
-        .collect()
+    filter_with_ancestors(
+        nodes,
+        query,
+        |node| node.key.as_str(),
+        |node| node.depth,
+        node_matches_query,
+    )
 }
 
 fn node_matches_query(node: &ListNode, query: &str) -> bool {
