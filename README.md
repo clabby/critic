@@ -137,8 +137,6 @@ When comment search is focused:
 
 Use this tab for code-level review: browse changed files, move by hunk, create/edit/delete pending inline comments, and submit a review batch.
 
-Screenshot placeholders:
-
 <p align="center">
   <img src="assets/diff.png" alt="critic-diff" />
 </p>

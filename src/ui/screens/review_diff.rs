@@ -275,10 +275,10 @@ impl DiffRowColors {
         let remove_fg = theme::diff_remove().fg.unwrap_or(Color::Red);
         let modified_left_fg = remove_fg;
         let modified_right_fg = add_fg;
-        let add_bg = theme::blend_with_terminal_bg(add_fg, 0.22);
-        let remove_bg = theme::blend_with_terminal_bg(remove_fg, 0.22);
-        let modified_left_bg = theme::blend_with_terminal_bg(modified_left_fg, 0.22);
-        let modified_right_bg = theme::blend_with_terminal_bg(modified_right_fg, 0.22);
+        let add_bg = theme::blend_with_terminal_bg(Color::LightGreen, 0.22);
+        let remove_bg = theme::blend_with_terminal_bg(Color::LightRed, 0.22);
+        let modified_left_bg = theme::blend_with_terminal_bg(Color::LightRed, 0.22);
+        let modified_right_bg = theme::blend_with_terminal_bg(Color::LightGreen, 0.22);
         let dim_bg = theme::blend_with_terminal_bg(dim_fg, 0.08);
         let (content_fg, content_bg, highlight_fg, highlight_bg) = match row_kind {
             PullRequestDiffRowKind::Context => (base_fg, None, base_fg, None),
