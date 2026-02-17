@@ -6,6 +6,9 @@
   <img src="assets/diff.png" alt="critic" />
 </p>
 
+> [!WARNING]
+> `critic` is still in early development. The UI, features, and keybindings are all subject to change. Feedback and contributions are very welcome!
+
 ## Features
 
 - Authenticate with GitHub using your existing `gh` login (`gh auth token`).
