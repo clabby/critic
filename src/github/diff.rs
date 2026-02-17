@@ -404,7 +404,7 @@ fn build_diff_file(
 
     let (changed_left, changed_right, left_highlights, right_highlights) = parsed
         .as_ref()
-        .map(changed_line_annotations)
+        .map(|entry| changed_line_annotations(entry, &left_lines, &right_lines))
         .unwrap_or_default();
 
     let mut rows = Vec::with_capacity(aligned.len());
@@ -505,6 +505,8 @@ type HighlightMap = HashMap<usize, Vec<PullRequestDiffHighlightRange>>;
 
 fn changed_line_annotations(
     entry: &RawDifftFile,
+    left_lines: &[String],
+    right_lines: &[String],
 ) -> (
     HashMap<usize, ()>,
     HashMap<usize, ()>,
@@ -518,68 +520,71 @@ fn changed_line_annotations(
 
     for chunk in &entry.chunks {
         for line in chunk {
-            if let Some(lhs) = &line.lhs {
-                left.insert(lhs.line_number, ());
-                let ranges = lhs
-                    .changes
-                    .iter()
-                    .filter_map(normalize_change_range)
-                    .collect::<Vec<_>>();
-                if !ranges.is_empty() {
-                    left_highlights
-                        .entry(lhs.line_number)
-                        .or_default()
-                        .extend(ranges);
-                }
-            }
-            if let Some(rhs) = &line.rhs {
-                right.insert(rhs.line_number, ());
-                let ranges = rhs
-                    .changes
-                    .iter()
-                    .filter_map(normalize_change_range)
-                    .collect::<Vec<_>>();
-                if !ranges.is_empty() {
-                    right_highlights
-                        .entry(rhs.line_number)
-                        .or_default()
-                        .extend(ranges);
-                }
-            }
+            record_side_annotations(
+                &mut left,
+                &mut left_highlights,
+                line.lhs.as_ref(),
+                left_lines,
+            );
+            record_side_annotations(
+                &mut right,
+                &mut right_highlights,
+                line.rhs.as_ref(),
+                right_lines,
+            );
         }
     }
-
-    normalize_highlight_map(&mut left_highlights);
-    normalize_highlight_map(&mut right_highlights);
 
     (left, right, left_highlights, right_highlights)
 }
 
-fn normalize_change_range(change: &RawDifftChange) -> Option<PullRequestDiffHighlightRange> {
-    (change.start < change.end).then_some(PullRequestDiffHighlightRange {
-        start: change.start,
-        end: change.end,
-    })
-}
+fn record_side_annotations(
+    changed_lines: &mut HashMap<usize, ()>,
+    highlights: &mut HighlightMap,
+    side: Option<&RawDifftSide>,
+    source_lines: &[String],
+) {
+    let Some(side) = side else {
+        return;
+    };
 
-fn normalize_highlight_map(map: &mut HighlightMap) {
-    for ranges in map.values_mut() {
-        *ranges = merge_highlight_ranges(ranges);
+    changed_lines.insert(side.line_number, ());
+    let ranges = source_lines
+        .get(side.line_number)
+        .map_or_else(Vec::new, |text| {
+            compute_highlight_ranges(text, &side.changes)
+        });
+    if ranges.is_empty() {
+        highlights.remove(&side.line_number);
+    } else {
+        highlights.insert(side.line_number, ranges);
     }
 }
 
-fn merge_highlight_ranges(
-    ranges: &[PullRequestDiffHighlightRange],
+fn compute_highlight_ranges(
+    line: &str,
+    changes: &[RawDifftChange],
 ) -> Vec<PullRequestDiffHighlightRange> {
-    if ranges.is_empty() {
+    if changes.is_empty() {
         return Vec::new();
     }
 
-    let mut sorted = ranges.to_vec();
-    sorted.sort_unstable_by_key(|range| (range.start, range.end));
+    let len = line.len();
+    let mut ranges = changes
+        .iter()
+        .filter_map(|change| {
+            let start = change.start.min(len);
+            let end = change.end.min(len);
+            (start < end).then_some(PullRequestDiffHighlightRange { start, end })
+        })
+        .collect::<Vec<_>>();
+    if ranges.is_empty() {
+        return Vec::new();
+    }
+    ranges.sort_unstable_by_key(|range| (range.start, range.end));
 
-    let mut merged: Vec<PullRequestDiffHighlightRange> = Vec::with_capacity(sorted.len());
-    for range in sorted {
+    let mut merged: Vec<PullRequestDiffHighlightRange> = Vec::with_capacity(ranges.len());
+    for range in ranges {
         match merged.last_mut() {
             Some(last) if range.start <= last.end => {
                 last.end = last.end.max(range.end);
@@ -588,7 +593,11 @@ fn merge_highlight_ranges(
         }
     }
 
-    merged
+    if merged.len() == 1 && merged[0].start == 0 && merged[0].end >= len {
+        vec![PullRequestDiffHighlightRange::full_line()]
+    } else {
+        merged
+    }
 }
 
 fn classify_row_kind(
@@ -844,6 +853,82 @@ mod tests {
         assert_eq!(
             row.right_highlights,
             vec![PullRequestDiffHighlightRange { start: 12, end: 15 }]
+        );
+    }
+
+    #[test]
+    fn compute_highlight_ranges_preserves_distinct_ranges() {
+        let ranges = compute_highlight_ranges(
+            "foo bar",
+            &[
+                RawDifftChange { start: 0, end: 3 },
+                RawDifftChange { start: 4, end: 7 },
+            ],
+        );
+        assert_eq!(
+            ranges,
+            vec![
+                PullRequestDiffHighlightRange { start: 0, end: 3 },
+                PullRequestDiffHighlightRange { start: 4, end: 7 },
+            ]
+        );
+    }
+
+    #[test]
+    fn compute_highlight_ranges_marks_full_line_when_range_spans_line() {
+        let ranges = compute_highlight_ranges("foobar", &[RawDifftChange { start: 0, end: 6 }]);
+        assert_eq!(ranges, vec![PullRequestDiffHighlightRange::full_line()]);
+    }
+
+    #[test]
+    fn compute_highlight_ranges_keeps_partial_segments_when_gap_non_whitespace() {
+        let ranges = compute_highlight_ranges(
+            "foo.bar",
+            &[
+                RawDifftChange { start: 0, end: 3 },
+                RawDifftChange { start: 4, end: 7 },
+            ],
+        );
+        assert_eq!(
+            ranges,
+            vec![
+                PullRequestDiffHighlightRange { start: 0, end: 3 },
+                PullRequestDiffHighlightRange { start: 4, end: 7 },
+            ]
+        );
+    }
+
+    #[test]
+    fn changed_line_annotations_overwrites_duplicate_line_changes() {
+        let entry = RawDifftFile {
+            path: "example.rs".to_owned(),
+            status: "changed".to_owned(),
+            aligned_lines: Vec::new(),
+            chunks: vec![
+                vec![RawDifftChunkLine {
+                    lhs: Some(RawDifftSide {
+                        line_number: 0,
+                        changes: vec![RawDifftChange { start: 0, end: 3 }],
+                    }),
+                    rhs: None,
+                }],
+                vec![RawDifftChunkLine {
+                    lhs: Some(RawDifftSide {
+                        line_number: 0,
+                        changes: vec![RawDifftChange { start: 4, end: 7 }],
+                    }),
+                    rhs: None,
+                }],
+            ],
+        };
+        let left_lines = vec!["foo.bar".to_owned()];
+        let right_lines = Vec::new();
+
+        let (_, _, left_highlights, _) =
+            changed_line_annotations(&entry, &left_lines, &right_lines);
+        assert_eq!(
+            left_highlights.get(&0),
+            Some(&vec![PullRequestDiffHighlightRange { start: 4, end: 7 }])
         );
     }
 }

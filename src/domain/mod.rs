@@ -137,11 +137,32 @@ pub enum PullRequestDiffRowKind {
     Modified,
 }
 
-/// A highlighted character range (start inclusive, end exclusive) inside a diff row side.
+/// A highlighted character range inside a diff row side.
+///
+/// `end` is exclusive for normal spans. When `end == FULL_LINE_END`, the
+/// range represents a full-line highlight.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct PullRequestDiffHighlightRange {
     pub start: usize,
     pub end: usize,
+}
+
+impl PullRequestDiffHighlightRange {
+    /// Sentinel end value used to represent a full-line highlight region.
+    pub const FULL_LINE_END: usize = usize::MAX;
+
+    #[must_use]
+    pub const fn full_line() -> Self {
+        Self {
+            start: 0,
+            end: Self::FULL_LINE_END,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_full_line(self) -> bool {
+        self.end == Self::FULL_LINE_END
+    }
 }
 
 /// The current application route.

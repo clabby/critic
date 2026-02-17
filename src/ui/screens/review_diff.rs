@@ -138,18 +138,30 @@ fn render_diff_side(context: DiffSideRenderContext<'_>) -> Vec<Span<'static>> {
     let visible_chars = text.chars().take(text_width).collect::<Vec<_>>();
     let visible_len = visible_chars.len();
     let color_set = DiffRowColors::new(row_kind, side);
+    let line_highlights = clip_and_merge_ranges(highlights, visible_len);
+    let has_line_highlights = !line_highlights.is_empty();
+    let full_line_highlight = line_highlights
+        .iter()
+        .any(|range| PullRequestDiffHighlightRange::is_full_line(*range));
     let alignment_gap = text.trim().is_empty()
         && line_number.is_none()
         && row_kind != PullRequestDiffRowKind::Context;
-    let number_bg = if alignment_gap {
-        Color::Reset
+    let number_bg = Color::Reset;
+    let side_has_change = line_number.is_some()
+        && (has_line_highlights
+            || matches!(
+                (row_kind, side),
+                (PullRequestDiffRowKind::Added, DiffSide::Right)
+                    | (PullRequestDiffRowKind::Removed, DiffSide::Left)
+                    | (PullRequestDiffRowKind::Modified, _)
+            ));
+    let should_use_partial = has_line_highlights && !full_line_highlight;
+    let number_fg = if side_has_change {
+        color_set.highlight_fg
     } else {
-        color_set.content_bg.unwrap_or(Color::Reset)
+        theme::dim().fg.unwrap_or(Color::DarkGray)
     };
-
-    let number_style = Style::default()
-        .fg(theme::dim().fg.unwrap_or(Color::DarkGray))
-        .bg(number_bg);
+    let number_style = Style::default().fg(number_fg).bg(number_bg);
     let content_style = Style::default()
         .fg(color_set.content_fg)
         .bg(color_set.content_bg.unwrap_or(Color::Reset));
@@ -168,12 +180,8 @@ fn render_diff_side(context: DiffSideRenderContext<'_>) -> Vec<Span<'static>> {
     let number_style = with_selection(number_style);
     let content_style = with_selection(content_style);
     let highlight_style = with_selection(highlight_style);
-
+    let partial_base_style = with_selection(Style::default().fg(color_set.content_fg));
     let mut spans = vec![Span::styled(number, number_style)];
-    let line_highlights = clip_and_merge_ranges(highlights, visible_len);
-    let should_use_partial = row_kind == PullRequestDiffRowKind::Modified
-        && !line_highlights.is_empty()
-        && !ranges_cover_visible_content(&line_highlights, visible_len);
 
     if text_width == 0 {
         return spans;
@@ -181,8 +189,11 @@ fn render_diff_side(context: DiffSideRenderContext<'_>) -> Vec<Span<'static>> {
 
     if text.trim().is_empty() {
         let filler_style = if alignment_gap {
-            Style::default().fg(theme::diff_context().fg.unwrap_or(color_set.dim_fg))
-        } else if row_kind == PullRequestDiffRowKind::Modified {
+            Style::default().fg(theme::blend_with_terminal_bg(
+                theme::dim().fg.unwrap_or(color_set.dim_fg),
+                0.8,
+            ))
+        } else if full_line_highlight {
             highlight_style
         } else {
             content_style
@@ -201,24 +212,37 @@ fn render_diff_side(context: DiffSideRenderContext<'_>) -> Vec<Span<'static>> {
         spans.extend(render_syntax_cells(
             &visible_chars,
             syntax_fg,
-            content_style,
+            partial_base_style,
             highlight_style,
             Some(&highlight_mask),
         ));
         if visible_len < text_width {
             spans.push(Span::styled(
                 " ".repeat(text_width - visible_len),
-                content_style,
+                partial_base_style,
             ));
         }
         return spans;
     }
 
-    let fill_style = if row_kind == PullRequestDiffRowKind::Modified {
-        highlight_style
-    } else {
-        content_style
-    };
+    if full_line_highlight {
+        spans.extend(render_syntax_cells(
+            &visible_chars,
+            syntax_fg,
+            highlight_style,
+            highlight_style,
+            None,
+        ));
+        if visible_len < text_width {
+            spans.push(Span::styled(
+                " ".repeat(text_width - visible_len),
+                highlight_style,
+            ));
+        }
+        return spans;
+    }
+
+    let fill_style = content_style;
     spans.extend(render_syntax_cells(
         &visible_chars,
         syntax_fg,
@@ -249,12 +273,12 @@ impl DiffRowColors {
         let dim_fg = theme::dim().fg.unwrap_or(Color::DarkGray);
         let add_fg = theme::diff_add().fg.unwrap_or(Color::Green);
         let remove_fg = theme::diff_remove().fg.unwrap_or(Color::Red);
-        let modified_left_fg = theme::issue().fg.unwrap_or(Color::Yellow);
+        let modified_left_fg = remove_fg;
         let modified_right_fg = add_fg;
         let add_bg = theme::blend_with_terminal_bg(add_fg, 0.22);
         let remove_bg = theme::blend_with_terminal_bg(remove_fg, 0.22);
-        let modified_left_bg = theme::blend_with_terminal_bg(modified_left_fg, 0.16);
-        let modified_right_bg = theme::blend_with_terminal_bg(modified_right_fg, 0.16);
+        let modified_left_bg = theme::blend_with_terminal_bg(modified_left_fg, 0.22);
+        let modified_right_bg = theme::blend_with_terminal_bg(modified_right_fg, 0.22);
         let dim_bg = theme::blend_with_terminal_bg(dim_fg, 0.08);
         let (content_fg, content_bg, highlight_fg, highlight_bg) = match row_kind {
             PullRequestDiffRowKind::Context => (base_fg, None, base_fg, None),
@@ -274,19 +298,9 @@ impl DiffRowColors {
             }
             PullRequestDiffRowKind::Modified => {
                 if side == DiffSide::Left {
-                    (
-                        base_fg,
-                        Some(modified_left_bg),
-                        modified_left_fg,
-                        Some(modified_left_bg),
-                    )
+                    (base_fg, None, modified_left_fg, Some(modified_left_bg))
                 } else {
-                    (
-                        base_fg,
-                        Some(modified_right_bg),
-                        modified_right_fg,
-                        Some(modified_right_bg),
-                    )
+                    (base_fg, None, modified_right_fg, Some(modified_right_bg))
                 }
             }
         };
@@ -335,6 +349,9 @@ fn clip_and_merge_ranges(
     let mut clipped = ranges
         .iter()
         .filter_map(|range| {
+            if range.is_full_line() {
+                return Some(PullRequestDiffHighlightRange::full_line());
+            }
             let start = range.start.min(visible_len);
             let end = range.end.min(visible_len);
             (start < end).then_some(PullRequestDiffHighlightRange { start, end })
@@ -343,6 +360,12 @@ fn clip_and_merge_ranges(
 
     if clipped.is_empty() {
         return clipped;
+    }
+    if clipped
+        .iter()
+        .any(|range| PullRequestDiffHighlightRange::is_full_line(*range))
+    {
+        return vec![PullRequestDiffHighlightRange::full_line()];
     }
 
     clipped.sort_unstable_by_key(|range| (range.start, range.end));
@@ -359,31 +382,13 @@ fn clip_and_merge_ranges(
     merged
 }
 
-fn ranges_cover_visible_content(
-    ranges: &[PullRequestDiffHighlightRange],
-    visible_len: usize,
-) -> bool {
-    if visible_len == 0 {
-        return false;
-    }
-
-    let mut covered_until = 0usize;
-    for range in ranges {
-        if range.start > covered_until {
-            return false;
-        }
-        covered_until = covered_until.max(range.end);
-        if covered_until >= visible_len {
-            return true;
-        }
-    }
-
-    false
-}
-
 fn mask_highlight_ranges(ranges: &[PullRequestDiffHighlightRange], width: usize) -> Vec<bool> {
     let mut mask = vec![false; width];
     for range in ranges {
+        if range.is_full_line() {
+            mask.fill(true);
+            return mask;
+        }
         let start = range.start.min(width);
         let end = range.end.min(width);
         for flag in mask.iter_mut().take(end).skip(start) {
