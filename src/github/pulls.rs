@@ -103,8 +103,6 @@ struct GraphQlPullNode {
     review_decision: Option<GraphQlReviewDecision>,
     #[serde(default)]
     review_requests: GraphQlReviewRequestConnection,
-    #[serde(default)]
-    latest_reviews: GraphQlLatestReviewConnection,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -125,23 +123,6 @@ enum GraphQlRequestedReviewer {
     User { login: String },
     Team,
     Mannequin,
-}
-
-#[derive(Debug, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-struct GraphQlLatestReviewConnection {
-    nodes: Vec<GraphQlLatestReviewNode>,
-}
-
-#[derive(Debug, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-struct GraphQlLatestReviewNode {
-    author: Option<GraphQlActor>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GraphQlActor {
-    login: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -196,13 +177,6 @@ query OpenPullReviewDecisions($owner: String!, $repo: String!, $after: String) {
               ... on User {
                 login
               }
-            }
-          }
-        }
-        latestReviews(first: 100) {
-          nodes {
-            author {
-              login
             }
           }
         }
@@ -391,11 +365,6 @@ async fn fetch_review_metadata(
                     request.requested_reviewer.as_ref()
                 {
                     reviewer_logins.insert(login.to_ascii_lowercase());
-                }
-            }
-            for review in &pull.latest_reviews.nodes {
-                if let Some(author) = review.author.as_ref() {
-                    reviewer_logins.insert(author.login.to_ascii_lowercase());
                 }
             }
 

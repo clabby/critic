@@ -49,7 +49,6 @@ fn render_search_box(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         area,
         search_box::SearchBoxProps {
             title: " PR Search ",
-            right_title: None,
             query: state.search_query(),
             focused: state.is_search_focused(),
             focused_placeholder: "(type to filter open pull requests)",
