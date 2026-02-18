@@ -105,6 +105,7 @@ fn render_left_pane(frame: &mut Frame<'_>, area: Rect, review: &ReviewScreenStat
         search_area,
         search_box::SearchBoxProps {
             title: " Comment Search ",
+            right_title: None,
             query: review.thread_search_query(),
             focused: review.is_thread_search_focused(),
             focused_placeholder: "(type to filter comments)",
@@ -386,6 +387,7 @@ fn render_diff_files(frame: &mut Frame<'_>, area: Rect, review: &ReviewScreenSta
         search_area,
         search_box::SearchBoxProps {
             title: " File Search ",
+            right_title: None,
             query: review.diff_search_query(),
             focused: review.is_diff_search_focused(),
             focused_placeholder: "(type to filter changed files)",

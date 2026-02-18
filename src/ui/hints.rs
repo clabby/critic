@@ -16,7 +16,7 @@ fn search_hints(state: &AppState) -> String {
     if state.is_search_focused() {
         "[type] edit query  [backspace] delete  [enter/esc] unfocus".to_owned()
     } else {
-        "[j/k/up/down] navigate  [enter] open PR  [W] open web  [s] focus search  [f] toggle filter  [o] toggle sort  [R] refresh  [q] quit".to_owned()
+        "[j/k/up/down] navigate  [enter] open PR  [W] open web  [s] focus search  [u] toggle scope  [i] toggle status  [o] toggle sort  [R] refresh  [q] quit".to_owned()
     }
 }
 

@@ -576,7 +576,8 @@ fn handle_search_key_event(
             open_selected_pull_in_browser(state);
         }
         KeyCode::Char('s') => state.focus_search(),
-        KeyCode::Char('f') => state.toggle_my_prs_filter(),
+        KeyCode::Char('u') => state.toggle_search_scope(),
+        KeyCode::Char('i') => state.toggle_search_status_filter(),
         KeyCode::Char('o') => state.toggle_search_sort(),
         KeyCode::Down | KeyCode::Char('j') => state.search_move_down(),
         KeyCode::Up | KeyCode::Char('k') => state.search_move_up(),

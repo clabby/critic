@@ -13,8 +13,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     text::{Line, Span},
     widgets::{
-        Block, Borders, Cell, HighlightSpacing, Paragraph, Row, Scrollbar, ScrollbarOrientation,
-        ScrollbarState, Table, TableState,
+        Block, Borders, Cell, HighlightSpacing, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table, TableState,
     },
 };
 
@@ -25,35 +24,89 @@ const MAX_AUTHOR_COL_WIDTH: u16 = 18;
 const MIN_TITLE_COL_WIDTH: u16 = 12;
 const COLUMN_SPACING: u16 = 1;
 
+const CONTROL_BOX_WIDTH: u16 = 18;
+
 pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let rows = Layout::vertical([Constraint::Length(3), Constraint::Min(6)]).split(area);
+    let controls = Layout::horizontal([
+        Constraint::Min(24),
+        Constraint::Length(CONTROL_BOX_WIDTH),
+        Constraint::Length(CONTROL_BOX_WIDTH),
+        Constraint::Length(CONTROL_BOX_WIDTH),
+    ])
+    .split(rows[0]);
 
-    render_search_box(frame, rows[0], state);
+    render_search_box(frame, controls[0], state);
+    render_scope_box(frame, controls[1], state);
+    render_status_box(frame, controls[2], state);
+    render_sort_box(frame, controls[3], state);
     render_results(frame, rows[1], state);
 }
 
 fn render_search_box(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
-    let filter_label = if state.filter_my_prs_only {
-        "mine"
-    } else {
-        "off"
-    };
-    let title = format!(
-        " PR Search [f] filter:{filter_label}  [o] sort:{} ",
-        state.search_sort.label()
-    );
-
     search_box::render(
         frame,
         area,
         search_box::SearchBoxProps {
-            title: title.as_str(),
+            title: " PR Search ",
+            right_title: None,
             query: state.search_query(),
             focused: state.is_search_focused(),
             focused_placeholder: "(type to filter open pull requests)",
             unfocused_placeholder: "(press [s] to focus search)",
         },
     );
+}
+
+fn render_scope_box(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let title = if state.is_search_focused() {
+        " Scope "
+    } else {
+        " Scope [u] "
+    };
+    let block = Block::default()
+        .title(Span::styled(title, theme::title()))
+        .borders(Borders::ALL)
+        .border_style(theme::border());
+
+    let value = state.search_scope.label();
+    let line = Line::from(vec![Span::raw("  "), Span::styled(value, theme::text())]);
+
+    frame.render_widget(Paragraph::new(line).block(block), area);
+}
+
+fn render_status_box(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let title = if state.is_search_focused() {
+        " Status "
+    } else {
+        " Status [i] "
+    };
+    let block = Block::default()
+        .title(Span::styled(title, theme::title()))
+        .borders(Borders::ALL)
+        .border_style(theme::border());
+
+    let value = state.search_status_filter.label();
+    let line = Line::from(vec![Span::raw("  "), Span::styled(value, theme::text())]);
+
+    frame.render_widget(Paragraph::new(line).block(block), area);
+}
+
+fn render_sort_box(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let title = if state.is_search_focused() {
+        " Sort "
+    } else {
+        " Sort [o] "
+    };
+    let block = Block::default()
+        .title(Span::styled(title, theme::title()))
+        .borders(Borders::ALL)
+        .border_style(theme::border());
+
+    let value = state.search_sort.label();
+    let line = Line::from(vec![Span::raw("  "), Span::styled(value, theme::text())]);
+
+    frame.render_widget(Paragraph::new(line).block(block), area);
 }
 
 fn render_results(frame: &mut Frame<'_>, area: Rect, state: &AppState) {

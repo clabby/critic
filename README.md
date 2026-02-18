@@ -86,7 +86,8 @@ Use this screen to fuzzy-filter open pull requests and choose one to review.
 | `enter` | Open selected pull request |
 | `W` | Open selected pull request in browser |
 | `s` | Focus search input |
-| `f` | Toggle filter (`off`/`mine`) |
+| `u` | Toggle scope (`all`/`author`/`reviewer`) |
+| `i` | Toggle status (`all`/`draft`/`ready`/`approved`/`rejected`) |
 | `o` | Toggle sort mode (updated/created) |
 | `R` | Refresh open pull request list |
 | `q` | Quit |

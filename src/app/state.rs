@@ -36,7 +36,8 @@ pub struct AppState {
     pub search_results: Vec<usize>,
     pub search_selected: usize,
     pub viewer_login: Option<String>,
-    pub filter_my_prs_only: bool,
+    pub search_scope: SearchScope,
+    pub search_status_filter: SearchStatusFilter,
     pub search_sort: SearchSort,
     pub review: Option<ReviewScreenState>,
     operation: Option<OperationState>,
@@ -54,7 +55,8 @@ impl Default for AppState {
             search_results: Vec::new(),
             search_selected: 0,
             viewer_login: None,
-            filter_my_prs_only: false,
+            search_scope: SearchScope::All,
+            search_status_filter: SearchStatusFilter::All,
             search_sort: SearchSort::UpdatedAt,
             review: None,
             operation: None,
@@ -66,6 +68,44 @@ impl Default for AppState {
 pub enum SearchSort {
     UpdatedAt,
     CreatedAt,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum SearchScope {
+    All,
+    Author,
+    Reviewer,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum SearchStatusFilter {
+    All,
+    Draft,
+    Ready,
+    Approved,
+    Rejected,
+}
+
+impl SearchStatusFilter {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Draft => "draft",
+            Self::Ready => "ready",
+            Self::Approved => "approved",
+            Self::Rejected => "rejected",
+        }
+    }
+}
+
+impl SearchScope {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Author => "author",
+            Self::Reviewer => "reviewer",
+        }
+    }
 }
 
 impl SearchSort {
@@ -102,18 +142,10 @@ impl AppState {
         self.search_results = rank_pull_requests(self.search_input.query(), &self.pull_requests)
             .into_iter()
             .filter(|result| {
-                if !self.filter_my_prs_only {
-                    return true;
-                }
-
-                let Some(expected) = viewer.as_ref() else {
-                    return true;
-                };
-
-                self.pull_requests
-                    .get(result.index)
-                    .map(|pull| pull.author.eq_ignore_ascii_case(expected))
-                    .unwrap_or(false)
+                self.pull_requests.get(result.index).is_some_and(|pull| {
+                    scope_matches(pull, self.search_scope, viewer.as_deref())
+                        && status_matches(pull, self.search_status_filter)
+                })
             })
             .map(|result| result.index)
             .collect();
@@ -139,8 +171,23 @@ impl AppState {
         }
     }
 
-    pub fn toggle_my_prs_filter(&mut self) {
-        self.filter_my_prs_only = !self.filter_my_prs_only;
+    pub fn toggle_search_scope(&mut self) {
+        self.search_scope = match self.search_scope {
+            SearchScope::All => SearchScope::Author,
+            SearchScope::Author => SearchScope::Reviewer,
+            SearchScope::Reviewer => SearchScope::All,
+        };
+        self.recompute_search();
+    }
+
+    pub fn toggle_search_status_filter(&mut self) {
+        self.search_status_filter = match self.search_status_filter {
+            SearchStatusFilter::All => SearchStatusFilter::Draft,
+            SearchStatusFilter::Draft => SearchStatusFilter::Ready,
+            SearchStatusFilter::Ready => SearchStatusFilter::Approved,
+            SearchStatusFilter::Approved => SearchStatusFilter::Rejected,
+            SearchStatusFilter::Rejected => SearchStatusFilter::All,
+        };
         self.recompute_search();
     }
 
@@ -229,6 +276,41 @@ impl AppState {
             .copied()
             .unwrap_or("⢎⡰");
         Some(format!("{frame} {}", operation.label))
+    }
+}
+
+fn scope_matches(
+    pull: &PullRequestSummary,
+    scope: SearchScope,
+    viewer_login: Option<&str>,
+) -> bool {
+    match scope {
+        SearchScope::All => true,
+        SearchScope::Author => viewer_login
+            .map(|login| pull.author.eq_ignore_ascii_case(login))
+            .unwrap_or(true),
+        SearchScope::Reviewer => viewer_login
+            .map(|login| pull.has_reviewer(login))
+            .unwrap_or(true),
+    }
+}
+
+fn status_matches(pull: &PullRequestSummary, status: SearchStatusFilter) -> bool {
+    use crate::domain::PullRequestReviewStatus;
+
+    match status {
+        SearchStatusFilter::All => true,
+        SearchStatusFilter::Draft => pull.is_draft,
+        SearchStatusFilter::Ready => !pull.is_draft,
+        SearchStatusFilter::Approved => {
+            matches!(pull.review_status, Some(PullRequestReviewStatus::Approved))
+        }
+        SearchStatusFilter::Rejected => {
+            matches!(
+                pull.review_status,
+                Some(PullRequestReviewStatus::ChangesRequested)
+            )
+        }
     }
 }
 
@@ -1964,6 +2046,8 @@ mod tests {
             html_url: Some("https://example.com".to_owned()),
             updated_at_unix_ms: 0,
             created_at_unix_ms: 0,
+            is_draft: false,
+            reviewer_logins: Vec::new(),
             review_status: None,
         };
 
@@ -2599,7 +2683,7 @@ mod tests {
     }
 
     #[test]
-    fn search_filter_my_prs_only_limits_results_to_viewer_login() {
+    fn search_scope_author_limits_results_to_viewer_login() {
         let mut state = AppState::default();
         state.set_viewer_login(Some("alice".to_owned()));
         state.set_pull_requests(vec![
@@ -2608,7 +2692,7 @@ mod tests {
             search_pull(3, "ALICE", 30, 3),
         ]);
 
-        state.toggle_my_prs_filter();
+        state.toggle_search_scope();
 
         let numbers: Vec<u64> = state
             .search_results
@@ -2639,6 +2723,36 @@ mod tests {
         assert_eq!(numbers, vec![1, 3, 2]);
     }
 
+    #[test]
+    fn search_status_filter_approved_only_keeps_approved_pulls() {
+        let mut state = AppState::default();
+        state.set_pull_requests(vec![
+            search_pull_with_status(1, false, None),
+            search_pull_with_status(
+                2,
+                false,
+                Some(crate::domain::PullRequestReviewStatus::Approved),
+            ),
+            search_pull_with_status(
+                3,
+                false,
+                Some(crate::domain::PullRequestReviewStatus::ChangesRequested),
+            ),
+        ]);
+
+        state.toggle_search_status_filter(); // draft
+        state.toggle_search_status_filter(); // ready
+        state.toggle_search_status_filter(); // approved
+
+        let numbers: Vec<u64> = state
+            .search_results
+            .iter()
+            .filter_map(|index| state.pull_requests.get(*index))
+            .map(|pull| pull.number)
+            .collect();
+        assert_eq!(numbers, vec![2]);
+    }
+
     fn search_pull(
         number: u64,
         author: &str,
@@ -2659,7 +2773,34 @@ mod tests {
             updated_at: "2026-02-16T00:00:00Z".to_owned(),
             updated_at_unix_ms,
             created_at_unix_ms,
+            is_draft: false,
+            reviewer_logins: Vec::new(),
             review_status: None,
+        }
+    }
+
+    fn search_pull_with_status(
+        number: u64,
+        is_draft: bool,
+        review_status: Option<crate::domain::PullRequestReviewStatus>,
+    ) -> PullRequestSummary {
+        PullRequestSummary {
+            owner: "owner".to_owned(),
+            repo: "repo".to_owned(),
+            number,
+            title: format!("PR {number}"),
+            author: "alice".to_owned(),
+            head_ref: format!("feature/{number}"),
+            base_ref: "main".to_owned(),
+            head_sha: format!("{number:040x}"),
+            base_sha: format!("{:040x}", number + 1),
+            html_url: None,
+            updated_at: "2026-02-16T00:00:00Z".to_owned(),
+            updated_at_unix_ms: number as i64,
+            created_at_unix_ms: number as i64,
+            is_draft,
+            reviewer_logins: Vec::new(),
+            review_status,
         }
     }
 }

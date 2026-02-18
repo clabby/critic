@@ -5,7 +5,7 @@ use crate::{
     github::errors::format_octocrab_error,
 };
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 use tokio::process::Command;
 
@@ -101,6 +101,47 @@ enum GraphQlReviewDecision {
 struct GraphQlPullNode {
     number: u64,
     review_decision: Option<GraphQlReviewDecision>,
+    #[serde(default)]
+    review_requests: GraphQlReviewRequestConnection,
+    #[serde(default)]
+    latest_reviews: GraphQlLatestReviewConnection,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct GraphQlReviewRequestConnection {
+    nodes: Vec<GraphQlReviewRequestNode>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct GraphQlReviewRequestNode {
+    requested_reviewer: Option<GraphQlRequestedReviewer>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "__typename")]
+enum GraphQlRequestedReviewer {
+    User { login: String },
+    Team,
+    Mannequin,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct GraphQlLatestReviewConnection {
+    nodes: Vec<GraphQlLatestReviewNode>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct GraphQlLatestReviewNode {
+    author: Option<GraphQlActor>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQlActor {
+    login: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -148,11 +189,34 @@ query OpenPullReviewDecisions($owner: String!, $repo: String!, $after: String) {
       nodes {
         number
         reviewDecision
+        reviewRequests(first: 100) {
+          nodes {
+            requestedReviewer {
+              __typename
+              ... on User {
+                login
+              }
+            }
+          }
+        }
+        latestReviews(first: 100) {
+          nodes {
+            author {
+              login
+            }
+          }
+        }
       }
     }
   }
 }
 "#;
+
+#[derive(Debug, Default, Clone)]
+struct PullReviewMetadata {
+    review_status: Option<PullRequestReviewStatus>,
+    reviewer_logins: Vec<String>,
+}
 
 /// Resolves repository context from explicit args, or `gh repo view` when omitted.
 pub async fn resolve_repository(
@@ -208,7 +272,7 @@ pub async fn fetch_open_pull_requests(
         .await?;
 
     let mut pulls = client.all_pages(first_page).await?;
-    let review_statuses = fetch_review_statuses(client, repository).await;
+    let review_metadata = fetch_review_metadata(client, repository).await;
 
     pulls.sort_by(|a, b| {
         let a_ts = a
@@ -231,7 +295,7 @@ pub async fn fetch_open_pull_requests(
             map_pull_request(
                 repository,
                 pull,
-                review_statuses.get(&number).copied().flatten(),
+                review_metadata.get(&number).cloned().unwrap_or_default(),
             )
         })
         .collect();
@@ -255,13 +319,17 @@ pub async fn fetch_pull_request_summary(
         .pulls(&repository.owner, &repository.repo)
         .get(pull_number)
         .await?;
-    Ok(map_pull_request(repository, pull, None))
+    Ok(map_pull_request(
+        repository,
+        pull,
+        PullReviewMetadata::default(),
+    ))
 }
 
-async fn fetch_review_statuses(
+async fn fetch_review_metadata(
     client: &octocrab::Octocrab,
     repository: &RepositoryRef,
-) -> HashMap<u64, Option<PullRequestReviewStatus>> {
+) -> HashMap<u64, PullReviewMetadata> {
     let mut after: Option<String> = None;
     let mut out = HashMap::new();
 
@@ -309,14 +377,35 @@ async fn fetch_review_statuses(
         };
 
         for pull in &connection.nodes {
-            let status = match pull.review_decision {
+            let review_status = match pull.review_decision {
                 Some(GraphQlReviewDecision::Approved) => Some(PullRequestReviewStatus::Approved),
                 Some(GraphQlReviewDecision::ChangesRequested) => {
                     Some(PullRequestReviewStatus::ChangesRequested)
                 }
                 Some(GraphQlReviewDecision::ReviewRequired) | None => None,
             };
-            out.insert(pull.number, status);
+
+            let mut reviewer_logins = HashSet::new();
+            for request in &pull.review_requests.nodes {
+                if let Some(GraphQlRequestedReviewer::User { login }) =
+                    request.requested_reviewer.as_ref()
+                {
+                    reviewer_logins.insert(login.to_ascii_lowercase());
+                }
+            }
+            for review in &pull.latest_reviews.nodes {
+                if let Some(author) = review.author.as_ref() {
+                    reviewer_logins.insert(author.login.to_ascii_lowercase());
+                }
+            }
+
+            out.insert(
+                pull.number,
+                PullReviewMetadata {
+                    review_status,
+                    reviewer_logins: reviewer_logins.into_iter().collect(),
+                },
+            );
         }
 
         if !connection.page_info.has_next_page {
@@ -331,7 +420,7 @@ async fn fetch_review_statuses(
 fn map_pull_request(
     repository: &RepositoryRef,
     pull: octocrab::models::pulls::PullRequest,
-    review_status: Option<PullRequestReviewStatus>,
+    review_metadata: PullReviewMetadata,
 ) -> PullRequestSummary {
     let head = pull.head;
     let base = pull.base;
@@ -361,6 +450,8 @@ fn map_pull_request(
         html_url: pull.html_url.map(|url| url.to_string()),
         updated_at_unix_ms: updated_ms,
         created_at_unix_ms: created_ms,
-        review_status,
+        is_draft: pull.draft.unwrap_or(false),
+        reviewer_logins: review_metadata.reviewer_logins,
+        review_status: review_metadata.review_status,
     }
 }
