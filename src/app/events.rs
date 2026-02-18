@@ -8,7 +8,10 @@ use crate::{
             reply_to_review_comment, set_review_thread_resolved, submit_pull_request_review,
         },
         diff::fetch_pull_request_diff_data,
-        pulls::{fetch_open_pull_requests, fetch_pull_request_summary, resolve_repository},
+        pulls::{
+            fetch_open_pull_requests, fetch_pull_request_summary, fetch_viewer_login,
+            resolve_repository,
+        },
     },
 };
 use tokio::sync::mpsc::UnboundedSender;
@@ -18,6 +21,7 @@ use tokio::sync::mpsc::UnboundedSender;
 pub enum WorkerMessage {
     PullRequestsLoaded {
         repository_label: String,
+        viewer_login: Option<String>,
         result: Result<Vec<PullRequestSummary>, String>,
     },
     PullRequestResolved {
@@ -77,19 +81,23 @@ pub fn spawn_load_pull_requests(
         let message = match resolve_repository(owner, repo).await {
             Ok(repository) => {
                 let label = repository.label();
+                let viewer_login = fetch_viewer_login(&client).await.ok();
                 match fetch_open_pull_requests(&client, &repository).await {
                     Ok(pulls) => WorkerMessage::PullRequestsLoaded {
                         repository_label: label,
+                        viewer_login,
                         result: Ok(pulls),
                     },
                     Err(error) => WorkerMessage::PullRequestsLoaded {
                         repository_label: label,
+                        viewer_login,
                         result: Err(error.to_string()),
                     },
                 }
             }
             Err(error) => WorkerMessage::PullRequestsLoaded {
                 repository_label: "(unknown repository)".to_owned(),
+                viewer_login: None,
                 result: Err(error.to_string()),
             },
         };

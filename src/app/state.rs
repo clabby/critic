@@ -35,6 +35,9 @@ pub struct AppState {
     pub search_input: SearchInputState,
     pub search_results: Vec<usize>,
     pub search_selected: usize,
+    pub viewer_login: Option<String>,
+    pub filter_my_prs_only: bool,
+    pub search_sort: SearchSort,
     pub review: Option<ReviewScreenState>,
     operation: Option<OperationState>,
 }
@@ -50,8 +53,26 @@ impl Default for AppState {
             search_input: SearchInputState::default(),
             search_results: Vec::new(),
             search_selected: 0,
+            viewer_login: None,
+            filter_my_prs_only: false,
+            search_sort: SearchSort::UpdatedAt,
             review: None,
             operation: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum SearchSort {
+    UpdatedAt,
+    CreatedAt,
+}
+
+impl SearchSort {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::UpdatedAt => "updated",
+            Self::CreatedAt => "created",
         }
     }
 }
@@ -67,15 +88,68 @@ impl AppState {
         self.search_selected = 0;
     }
 
+    pub fn set_viewer_login(&mut self, login: Option<String>) {
+        self.viewer_login = login;
+        self.recompute_search();
+    }
+
     pub fn recompute_search(&mut self) {
+        let viewer = self
+            .viewer_login
+            .as_ref()
+            .map(|value| value.to_ascii_lowercase());
+
         self.search_results = rank_pull_requests(self.search_input.query(), &self.pull_requests)
             .into_iter()
+            .filter(|result| {
+                if !self.filter_my_prs_only {
+                    return true;
+                }
+
+                let Some(expected) = viewer.as_ref() else {
+                    return true;
+                };
+
+                self.pull_requests
+                    .get(result.index)
+                    .map(|pull| pull.author.eq_ignore_ascii_case(expected))
+                    .unwrap_or(false)
+            })
             .map(|result| result.index)
             .collect();
+
+        self.search_results.sort_by(|a, b| {
+            let a_pull = self.pull_requests.get(*a);
+            let b_pull = self.pull_requests.get(*b);
+            let a_ts = match self.search_sort {
+                SearchSort::UpdatedAt => a_pull.map(|pull| pull.updated_at_unix_ms),
+                SearchSort::CreatedAt => a_pull.map(|pull| pull.created_at_unix_ms),
+            }
+            .unwrap_or_default();
+            let b_ts = match self.search_sort {
+                SearchSort::UpdatedAt => b_pull.map(|pull| pull.updated_at_unix_ms),
+                SearchSort::CreatedAt => b_pull.map(|pull| pull.created_at_unix_ms),
+            }
+            .unwrap_or_default();
+            b_ts.cmp(&a_ts)
+        });
 
         if self.search_selected >= self.search_results.len() {
             self.search_selected = self.search_results.len().saturating_sub(1);
         }
+    }
+
+    pub fn toggle_my_prs_filter(&mut self) {
+        self.filter_my_prs_only = !self.filter_my_prs_only;
+        self.recompute_search();
+    }
+
+    pub fn toggle_search_sort(&mut self) {
+        self.search_sort = match self.search_sort {
+            SearchSort::UpdatedAt => SearchSort::CreatedAt,
+            SearchSort::CreatedAt => SearchSort::UpdatedAt,
+        };
+        self.recompute_search();
     }
 
     pub fn selected_search_pull(&self) -> Option<&PullRequestSummary> {
@@ -1816,7 +1890,8 @@ fn is_commentable_diff_row(
 #[cfg(test)]
 mod tests {
     use super::{
-        DiffFocus, PendingReviewCommentDraft, ReviewScreenState, ReviewTab, build_diff_tree_rows,
+        AppState, DiffFocus, PendingReviewCommentDraft, ReviewScreenState, ReviewTab,
+        build_diff_tree_rows,
     };
     use crate::domain::{
         PullRequestComment, PullRequestData, PullRequestDiffData, PullRequestDiffFile,
@@ -1888,6 +1963,7 @@ mod tests {
             base_sha: "basesha".to_owned(),
             html_url: Some("https://example.com".to_owned()),
             updated_at_unix_ms: 0,
+            created_at_unix_ms: 0,
             review_status: None,
         };
 
@@ -2520,5 +2596,70 @@ mod tests {
 
         assert_eq!(review.selected_diff_line, 0);
         assert_eq!(review.selected_diff_range(), Some((0, 0)));
+    }
+
+    #[test]
+    fn search_filter_my_prs_only_limits_results_to_viewer_login() {
+        let mut state = AppState::default();
+        state.set_viewer_login(Some("alice".to_owned()));
+        state.set_pull_requests(vec![
+            search_pull(1, "alice", 10, 1),
+            search_pull(2, "bob", 20, 2),
+            search_pull(3, "ALICE", 30, 3),
+        ]);
+
+        state.toggle_my_prs_filter();
+
+        let numbers: Vec<u64> = state
+            .search_results
+            .iter()
+            .filter_map(|index| state.pull_requests.get(*index))
+            .map(|pull| pull.number)
+            .collect();
+        assert_eq!(numbers, vec![3, 1]);
+    }
+
+    #[test]
+    fn search_sort_created_orders_by_creation_timestamp_desc() {
+        let mut state = AppState::default();
+        state.set_pull_requests(vec![
+            search_pull(1, "alice", 10, 300),
+            search_pull(2, "alice", 30, 100),
+            search_pull(3, "alice", 20, 200),
+        ]);
+
+        state.toggle_search_sort();
+
+        let numbers: Vec<u64> = state
+            .search_results
+            .iter()
+            .filter_map(|index| state.pull_requests.get(*index))
+            .map(|pull| pull.number)
+            .collect();
+        assert_eq!(numbers, vec![1, 3, 2]);
+    }
+
+    fn search_pull(
+        number: u64,
+        author: &str,
+        updated_at_unix_ms: i64,
+        created_at_unix_ms: i64,
+    ) -> PullRequestSummary {
+        PullRequestSummary {
+            owner: "owner".to_owned(),
+            repo: "repo".to_owned(),
+            number,
+            title: format!("PR {number}"),
+            author: author.to_owned(),
+            head_ref: format!("feature/{number}"),
+            base_ref: "main".to_owned(),
+            head_sha: format!("{number:040x}"),
+            base_sha: format!("{:040x}", number + 1),
+            html_url: None,
+            updated_at: "2026-02-16T00:00:00Z".to_owned(),
+            updated_at_unix_ms,
+            created_at_unix_ms,
+            review_status: None,
+        }
     }
 }

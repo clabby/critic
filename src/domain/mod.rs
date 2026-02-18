@@ -17,6 +17,7 @@ pub struct PullRequestSummary {
     pub base_sha: String,
     pub html_url: Option<String>,
     pub updated_at_unix_ms: i64,
+    pub created_at_unix_ms: i64,
     pub review_status: Option<PullRequestReviewStatus>,
 }
 

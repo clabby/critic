@@ -246,12 +246,14 @@ async fn process_worker_message(
     match message {
         WorkerMessage::PullRequestsLoaded {
             repository_label,
+            viewer_login,
             result,
         } => {
             if state.route == Route::Search {
                 state.end_operation();
             }
             state.set_repository_label(repository_label);
+            state.set_viewer_login(viewer_login);
 
             match result {
                 Ok(pulls) => {
@@ -574,6 +576,8 @@ fn handle_search_key_event(
             open_selected_pull_in_browser(state);
         }
         KeyCode::Char('s') => state.focus_search(),
+        KeyCode::Char('f') => state.toggle_my_prs_filter(),
+        KeyCode::Char('o') => state.toggle_search_sort(),
         KeyCode::Down | KeyCode::Char('j') => state.search_move_down(),
         KeyCode::Up | KeyCode::Char('k') => state.search_move_up(),
         KeyCode::Enter => {

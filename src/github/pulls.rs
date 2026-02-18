@@ -239,6 +239,12 @@ pub async fn fetch_open_pull_requests(
     Ok(mapped)
 }
 
+/// Fetches the authenticated viewer login.
+pub async fn fetch_viewer_login(client: &octocrab::Octocrab) -> Result<String> {
+    let user = client.current().user().await?;
+    Ok(user.login)
+}
+
 /// Fetches a single pull request summary by number.
 pub async fn fetch_pull_request_summary(
     client: &octocrab::Octocrab,
@@ -329,9 +335,12 @@ fn map_pull_request(
 ) -> PullRequestSummary {
     let head = pull.head;
     let base = pull.base;
-    let updated_ms = pull
-        .updated_at
-        .or(pull.created_at)
+    let created = pull.created_at;
+    let updated = pull.updated_at.or_else(|| created.clone());
+    let updated_ms = updated
+        .map(|time| time.timestamp_millis())
+        .unwrap_or_default();
+    let created_ms = created
         .map(|time| time.timestamp_millis())
         .unwrap_or_default();
 
@@ -351,6 +360,7 @@ fn map_pull_request(
         base_sha: base.sha,
         html_url: pull.html_url.map(|url| url.to_string()),
         updated_at_unix_ms: updated_ms,
+        created_at_unix_ms: created_ms,
         review_status,
     }
 }

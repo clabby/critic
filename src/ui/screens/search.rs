@@ -33,11 +33,21 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 }
 
 fn render_search_box(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let filter_label = if state.filter_my_prs_only {
+        "mine"
+    } else {
+        "off"
+    };
+    let title = format!(
+        " PR Search [f] filter:{filter_label}  [o] sort:{} ",
+        state.search_sort.label()
+    );
+
     search_box::render(
         frame,
         area,
         search_box::SearchBoxProps {
-            title: " PR Search ",
+            title: title.as_str(),
             query: state.search_query(),
             focused: state.is_search_focused(),
             focused_placeholder: "(type to filter open pull requests)",

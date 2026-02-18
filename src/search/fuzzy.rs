@@ -59,6 +59,7 @@ mod tests {
             base_sha: format!("{:040x}", number + 1),
             html_url: None,
             updated_at_unix_ms: number as i64,
+            created_at_unix_ms: number as i64,
             review_status: Some(PullRequestReviewStatus::Approved),
         }
     }
