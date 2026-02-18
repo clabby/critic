@@ -394,7 +394,7 @@ fn map_pull_request(
     let head = pull.head;
     let base = pull.base;
     let created = pull.created_at;
-    let updated = pull.updated_at.or_else(|| created.clone());
+    let updated = pull.updated_at.or_else(|| created);
     let updated_ms = updated
         .map(|time| time.timestamp_millis())
         .unwrap_or_default();

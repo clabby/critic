@@ -13,7 +13,8 @@ use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     text::{Line, Span},
     widgets::{
-        Block, Borders, Cell, HighlightSpacing, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table, TableState,
+        Block, Borders, Cell, HighlightSpacing, Paragraph, Row, Scrollbar, ScrollbarOrientation,
+        ScrollbarState, Table, TableState,
     },
 };
 

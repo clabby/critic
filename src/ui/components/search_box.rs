@@ -1,10 +1,10 @@
 use crate::ui::theme;
 use ratatui::{
+    Frame,
     layout::Rect,
     style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
-    Frame,
 };
 
 pub struct SearchBoxProps<'a> {
