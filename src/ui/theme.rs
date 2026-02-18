@@ -248,8 +248,20 @@ pub fn text() -> Style {
     with_palette(|theme| Style::default().fg(theme.text))
 }
 
+pub fn strong_text() -> Style {
+    with_palette(|theme| Style::default().fg(theme.text).add_modifier(Modifier::BOLD))
+}
+
 pub fn selected() -> Style {
     with_palette(|theme| Style::default().fg(theme.selected_fg).bg(theme.selected_bg))
+}
+
+pub fn selected_muted() -> Style {
+    with_palette(|theme| {
+        Style::default()
+            .fg(theme.text)
+            .bg(blend_with_terminal_bg(theme.dim, 0.35))
+    })
 }
 
 pub fn issue() -> Style {
