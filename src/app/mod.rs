@@ -325,15 +325,11 @@ async fn process_worker_message(
         }
         WorkerMessage::PullRequestResolved {
             repository_label,
-            viewer_login,
             pull_number,
             result,
         } => {
             state.end_operation();
             state.set_repository_label(repository_label);
-            if let Some(login) = viewer_login {
-                state.set_viewer_login(Some(login));
-            }
 
             match result {
                 Ok(pull) => {
