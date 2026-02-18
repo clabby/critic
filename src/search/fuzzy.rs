@@ -58,7 +58,6 @@ mod tests {
             head_sha: format!("{number:040x}"),
             base_sha: format!("{:040x}", number + 1),
             html_url: None,
-            updated_at: "2026-02-16T00:00:00Z".to_owned(),
             updated_at_unix_ms: number as i64,
             review_status: Some(PullRequestReviewStatus::Approved),
         }
