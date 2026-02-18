@@ -1,7 +1,7 @@
 //! Pull request fuzzy-search screen renderer.
 
 use crate::{
-    app::state::AppState,
+    app::state::{AppState, SearchSort},
     domain::PullRequestReviewStatus,
     ui::{
         components::{search_box, shared::short_timestamp},
@@ -18,11 +18,11 @@ use ratatui::{
     },
 };
 
-const DATE_COL_WIDTH: u16 = 12;
+const AGE_COL_WIDTH: u16 = 4;
 const STATUS_COL_WIDTH: u16 = 1;
-const MIN_AUTHOR_COL_WIDTH: u16 = 4;
-const MAX_AUTHOR_COL_WIDTH: u16 = 18;
-const MIN_TITLE_COL_WIDTH: u16 = 12;
+const MIN_AUTHOR_COL_WIDTH: u16 = 8;
+const MAX_AUTHOR_COL_WIDTH: u16 = 16;
+const MIN_TITLE_COL_WIDTH: u16 = 16;
 const COLUMN_SPACING: u16 = 1;
 
 const CONTROL_BOX_WIDTH: u16 = 18;
@@ -183,25 +183,23 @@ fn render_results(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         .unwrap_or(2);
 
     // The highlight symbol "▸ " occupies 2 columns; 4 inter-column gaps each cost COLUMN_SPACING.
-    let fixed = DATE_COL_WIDTH + STATUS_COL_WIDTH + number_col_width;
+    let fixed = AGE_COL_WIDTH + STATUS_COL_WIDTH + number_col_width;
     let overhead = COLUMN_SPACING * 4 + 2;
-    let available = list_area.width.saturating_sub(fixed + overhead);
-    let max_author_by_min_title = available.saturating_sub(MIN_TITLE_COL_WIDTH);
-    let max_author_by_ratio = available / 3;
-    let max_author_that_fits = max_author_by_min_title.min(max_author_by_ratio);
-    let author_col_width = if max_author_that_fits.min(MAX_AUTHOR_COL_WIDTH) >= MIN_AUTHOR_COL_WIDTH
-    {
-        max_author_that_fits.min(MAX_AUTHOR_COL_WIDTH)
+    let available_for_author = list_area
+        .width
+        .saturating_sub(fixed + overhead + MIN_TITLE_COL_WIDTH);
+    let author_col_width = if available_for_author >= MIN_AUTHOR_COL_WIDTH {
+        available_for_author.min(MAX_AUTHOR_COL_WIDTH)
     } else {
-        max_author_that_fits
+        available_for_author
     };
 
     let widths = [
-        Constraint::Length(author_col_width),
-        Constraint::Length(DATE_COL_WIDTH),
+        Constraint::Length(AGE_COL_WIDTH),
         Constraint::Length(STATUS_COL_WIDTH),
         Constraint::Length(number_col_width),
         Constraint::Fill(1),
+        Constraint::Length(author_col_width),
     ];
 
     let rows: Vec<Row<'_>> = state
@@ -209,30 +207,30 @@ fn render_results(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         .iter()
         .filter_map(|index| state.pull_requests.get(*index))
         .map(|pull| {
-            let status_text = match pull.review_status {
-                Some(PullRequestReviewStatus::Approved) => "A",
-                Some(PullRequestReviewStatus::ChangesRequested) => "R",
-                None => "",
+            let (status_text, status_style) = if pull.is_draft {
+                ("D", theme::dim())
+            } else {
+                match pull.review_status {
+                    Some(PullRequestReviewStatus::Approved) => ("A", theme::resolved_thread()),
+                    Some(PullRequestReviewStatus::ChangesRequested) => ("R", theme::error()),
+                    None => ("", theme::dim()),
+                }
             };
 
-            let status_style = match pull.review_status {
-                Some(PullRequestReviewStatus::Approved) => theme::resolved_thread(),
-                Some(PullRequestReviewStatus::ChangesRequested) => theme::error(),
-                None => theme::dim(),
+            let age_ms = match state.search_sort {
+                SearchSort::UpdatedAt => pull.updated_at_unix_ms,
+                SearchSort::CreatedAt => pull.created_at_unix_ms,
             };
 
             Row::new([
-                Cell::new(Span::styled(pull.author.clone(), theme::dim())),
-                Cell::new(Span::styled(
-                    short_timestamp(pull.updated_at_unix_ms),
-                    theme::dim(),
-                )),
+                Cell::new(Span::styled(short_timestamp(age_ms), theme::dim())),
                 Cell::new(Span::styled(status_text, status_style)),
                 Cell::new(
                     Line::styled(format!("#{}", pull.number), theme::title())
                         .alignment(Alignment::Right),
                 ),
                 Cell::new(pull.title.clone()),
+                Cell::new(Span::styled(pull.author.clone(), theme::dim())),
             ])
         })
         .collect();
