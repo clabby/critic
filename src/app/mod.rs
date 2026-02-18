@@ -11,8 +11,8 @@ use crate::{
         drafts::{DraftStore, LoadOutcome},
         events::{
             MutationRequest, WorkerMessage, spawn_apply_mutation, spawn_load_pull_request_data,
-            spawn_load_pull_request_diff, spawn_load_pull_requests, spawn_load_viewer_login,
-            spawn_load_specific_pull_request,
+            spawn_load_pull_request_diff, spawn_load_pull_requests,
+            spawn_load_specific_pull_request, spawn_load_viewer_login,
         },
         state::{
             AppState, PendingReviewCommentSide, ReviewSubmissionEvent, ReviewTab, SearchInputState,
