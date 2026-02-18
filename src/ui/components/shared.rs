@@ -24,7 +24,7 @@ pub fn short_preview(text: &str, max_chars: usize) -> String {
 /// Formats a unix timestamp (ms) into a compact relative duration like "3d" or "2h".
 pub fn short_timestamp(unix_ms: i64) -> String {
     if unix_ms <= 0 {
-        return " 0s".to_owned();
+        return short_relative_duration(0);
     }
 
     let now_ms = SystemTime::now()
