@@ -261,7 +261,7 @@ fn render_results(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
                 ])),
                 Cell::new(Span::styled(status_text, status_style)),
                 Cell::new(
-                    Line::styled(format!("#{}", pull.number), theme::emphasis())
+                    Line::styled(format!("#{}", pull.number), theme::strong_text())
                         .alignment(Alignment::Right),
                 ),
                 Cell::new(Span::styled(pull.title.clone(), theme::text())),
@@ -272,7 +272,7 @@ fn render_results(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let table = Table::new(rows, widths)
         .column_spacing(COLUMN_SPACING)
         .row_highlight_style(if state.is_search_focused() {
-            theme::selected_subtle()
+            theme::selected_muted()
         } else {
             theme::selected()
         })
