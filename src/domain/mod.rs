@@ -17,6 +17,9 @@ pub struct PullRequestSummary {
     pub base_sha: String,
     pub html_url: Option<String>,
     pub updated_at_unix_ms: i64,
+    pub created_at_unix_ms: i64,
+    pub is_draft: bool,
+    pub reviewer_logins: Vec<String>,
     pub review_status: Option<PullRequestReviewStatus>,
 }
 
@@ -27,6 +30,12 @@ impl PullRequestSummary {
             "#{} {} @{} {} -> {}",
             self.number, self.title, self.author, self.head_ref, self.base_ref
         )
+    }
+
+    pub fn has_reviewer(&self, login: &str) -> bool {
+        self.reviewer_logins
+            .iter()
+            .any(|reviewer| reviewer.eq_ignore_ascii_case(login))
     }
 }
 

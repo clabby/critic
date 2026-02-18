@@ -25,33 +25,134 @@ const MAX_AUTHOR_COL_WIDTH: u16 = 18;
 const MIN_TITLE_COL_WIDTH: u16 = 12;
 const COLUMN_SPACING: u16 = 1;
 
+const CONTROL_BOX_WIDTH: u16 = 18;
+
 pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let rows = Layout::vertical([Constraint::Length(3), Constraint::Min(6)]).split(area);
+    let controls = Layout::horizontal([
+        Constraint::Min(24),
+        Constraint::Length(CONTROL_BOX_WIDTH),
+        Constraint::Length(CONTROL_BOX_WIDTH),
+        Constraint::Length(CONTROL_BOX_WIDTH),
+    ])
+    .split(rows[0]);
 
-    render_search_box(frame, rows[0], state);
+    render_search_box(frame, controls[0], state);
+    render_scope_box(frame, controls[1], state);
+    render_status_box(frame, controls[2], state);
+    render_sort_box(frame, controls[3], state);
     render_results(frame, rows[1], state);
 }
 
 fn render_search_box(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let title = if state.is_search_focused() {
+        Line::from(vec![Span::styled(" PR Search ", theme::info())])
+    } else {
+        Line::from(vec![
+            Span::styled(" PR Search ", theme::title()),
+            Span::styled("[s] ", theme::info()),
+        ])
+    };
+
     search_box::render(
         frame,
         area,
         search_box::SearchBoxProps {
             title: " PR Search ",
+            title_line: Some(title),
             query: state.search_query(),
             focused: state.is_search_focused(),
-            focused_placeholder: "(type to filter open pull requests)",
-            unfocused_placeholder: "(press [s] to focus search)",
+            focused_placeholder: "",
+            unfocused_placeholder: "search...",
+            focused_right_hint: Some("[⏎/␛]"),
         },
     );
 }
 
-fn render_results(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+fn render_scope_box(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let title = if state.is_search_focused() {
+        Line::from(vec![Span::styled(" Scope ", theme::title())])
+    } else {
+        Line::from(vec![
+            Span::styled(" Scope ", theme::title()),
+            Span::styled("[u] ", theme::info()),
+        ])
+    };
     let block = Block::default()
-        .title(Span::styled(
-            format!(" Open Pull Requests ({}) ", state.search_results.len()),
-            theme::title(),
-        ))
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(theme::border());
+
+    let value = state.search_scope.label();
+    let line = Line::from(vec![Span::raw("  "), Span::styled(value, theme::text())]);
+
+    frame.render_widget(Paragraph::new(line).block(block), area);
+}
+
+fn render_status_box(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let title = if state.is_search_focused() {
+        Line::from(vec![Span::styled(" Status ", theme::title())])
+    } else {
+        Line::from(vec![
+            Span::styled(" Status ", theme::title()),
+            Span::styled("[i] ", theme::info()),
+        ])
+    };
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(theme::border());
+
+    let value = state.search_status_filter.label();
+    let line = Line::from(vec![Span::raw("  "), Span::styled(value, theme::text())]);
+
+    frame.render_widget(Paragraph::new(line).block(block), area);
+}
+
+fn render_sort_box(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let title = if state.is_search_focused() {
+        Line::from(vec![Span::styled(" Sort ", theme::title())])
+    } else {
+        Line::from(vec![
+            Span::styled(" Sort ", theme::title()),
+            Span::styled("[o] ", theme::info()),
+        ])
+    };
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(theme::border());
+
+    let value = state.search_sort.label();
+    let line = Line::from(vec![Span::raw("  "), Span::styled(value, theme::text())]);
+
+    frame.render_widget(Paragraph::new(line).block(block), area);
+}
+
+fn render_results(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let title = if state.is_search_focused() {
+        Line::from(vec![
+            Span::styled(" Open Pull Requests ", theme::title()),
+            Span::styled(format!("({}) ", state.search_results.len()), theme::dim()),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled(" Open Pull Requests ", theme::title()),
+            Span::styled(format!("({})", state.search_results.len()), theme::dim()),
+            Span::raw(" "),
+            Span::styled("[j/k]", theme::info()),
+            Span::styled(" move  ", theme::dim()),
+            Span::styled("[⏎]", theme::info()),
+            Span::styled(" open  ", theme::dim()),
+            Span::styled("[W]", theme::info()),
+            Span::styled(" web  ", theme::dim()),
+            Span::styled("[R]", theme::info()),
+            Span::styled(" refresh ", theme::dim()),
+        ])
+    };
+
+    let block = Block::default()
+        .title(title)
         .borders(Borders::ALL)
         .border_style(theme::border());
     let inner = block.inner(area);
