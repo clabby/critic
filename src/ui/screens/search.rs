@@ -4,10 +4,7 @@ use crate::{
     app::state::{AppState, SearchSort},
     domain::PullRequestReviewStatus,
     ui::{
-        components::{
-            search_box,
-            shared::{short_preview, short_timestamp},
-        },
+        components::{search_box, shared::short_timestamp},
         theme,
     },
 };
@@ -199,10 +196,10 @@ fn render_results(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 
     let widths = [
         Constraint::Length(AGE_COL_WIDTH),
+        Constraint::Length(author_col_width),
         Constraint::Length(STATUS_COL_WIDTH),
         Constraint::Length(number_col_width),
         Constraint::Fill(1),
-        Constraint::Length(author_col_width),
     ];
 
     let rows: Vec<Row<'_>> = state
@@ -236,7 +233,7 @@ fn render_results(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
                 .as_deref()
                 .is_some_and(|login| pull.has_reviewer(login))
             {
-                ("R ", theme::dim())
+                ("+ ", theme::dim())
             } else {
                 ("  ", theme::dim())
             };
@@ -245,28 +242,40 @@ fn render_results(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             let author_text = if author_text_width == 0 {
                 String::new()
             } else {
-                short_preview(&pull.author, author_text_width)
+                let author_len = pull.author.chars().count();
+                if author_len <= author_text_width {
+                    pull.author.clone()
+                } else {
+                    let head_len = author_text_width.saturating_sub(1);
+                    let mut truncated = pull.author.chars().take(head_len).collect::<String>();
+                    truncated.push('…');
+                    truncated
+                }
             };
 
             Row::new([
                 Cell::new(Span::styled(short_timestamp(age_ms), theme::dim())),
-                Cell::new(Span::styled(status_text, status_style)),
-                Cell::new(
-                    Line::styled(format!("#{}", pull.number), theme::title())
-                        .alignment(Alignment::Right),
-                ),
-                Cell::new(pull.title.clone()),
                 Cell::new(Line::from(vec![
                     Span::styled(author_marker, author_marker_style),
                     Span::styled(author_text, theme::dim()),
                 ])),
+                Cell::new(Span::styled(status_text, status_style)),
+                Cell::new(
+                    Line::styled(format!("#{}", pull.number), theme::emphasis())
+                        .alignment(Alignment::Right),
+                ),
+                Cell::new(Span::styled(pull.title.clone(), theme::text())),
             ])
         })
         .collect();
 
     let table = Table::new(rows, widths)
         .column_spacing(COLUMN_SPACING)
-        .row_highlight_style(theme::selected())
+        .row_highlight_style(if state.is_search_focused() {
+            theme::selected_subtle()
+        } else {
+            theme::selected()
+        })
         .highlight_symbol("▸ ")
         .highlight_spacing(HighlightSpacing::Always);
 

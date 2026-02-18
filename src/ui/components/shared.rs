@@ -43,12 +43,12 @@ fn short_relative_duration(diff_ms: i64) -> String {
     }
 
     let minutes = seconds / 60;
-    if minutes < 100 {
+    if minutes < 60 {
         return compact_age(minutes, "m");
     }
 
     let hours = minutes / 60;
-    if hours < 48 {
+    if hours < 24 {
         return compact_age(hours, "h");
     }
 
@@ -58,7 +58,7 @@ fn short_relative_duration(diff_ms: i64) -> String {
     }
 
     let weeks = days / 7;
-    if weeks < 10 {
+    if weeks < 8 {
         return compact_age(weeks, "w");
     }
 
@@ -84,7 +84,7 @@ mod tests {
         assert_eq!(short_relative_duration(10_000), "10s ");
         assert_eq!(short_relative_duration(120_000), " 2m ");
         assert_eq!(short_relative_duration(7_200_000), " 2h ");
-        assert_eq!(short_relative_duration(86_400_000), "24h ");
+        assert_eq!(short_relative_duration(86_400_000), " 1d ");
         assert_eq!(short_relative_duration(7 * 86_400_000), " 7d ");
         assert_eq!(short_relative_duration(100 * 86_400_000), " 3M ");
         assert_eq!(short_relative_duration(700 * 86_400_000), "23M ");
@@ -93,9 +93,13 @@ mod tests {
 
     #[test]
     fn respects_bucket_boundaries() {
-        assert_eq!(short_relative_duration(99 * 60_000), "99m ");
-        assert_eq!(short_relative_duration(100 * 60_000), " 1h ");
+        assert_eq!(short_relative_duration(59 * 60_000), "59m ");
+        assert_eq!(short_relative_duration(60 * 60_000), " 1h ");
+        assert_eq!(short_relative_duration(23 * 3_600_000), "23h ");
+        assert_eq!(short_relative_duration(24 * 3_600_000), " 1d ");
         assert_eq!(short_relative_duration(13 * 86_400_000), "13d ");
         assert_eq!(short_relative_duration(14 * 86_400_000), " 2w ");
+        assert_eq!(short_relative_duration(55 * 86_400_000), " 7w ");
+        assert_eq!(short_relative_duration(56 * 86_400_000), " 1M ");
     }
 }
