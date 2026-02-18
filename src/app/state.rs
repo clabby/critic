@@ -139,7 +139,10 @@ impl AppState {
             .as_ref()
             .map(|value| value.to_ascii_lowercase());
 
-        self.search_results = rank_pull_requests(self.search_input.query(), &self.pull_requests)
+        let query = self.search_input.query();
+        let has_query = !query.trim().is_empty();
+
+        self.search_results = rank_pull_requests(query, &self.pull_requests)
             .into_iter()
             .filter(|result| {
                 self.pull_requests.get(result.index).is_some_and(|pull| {
@@ -150,21 +153,23 @@ impl AppState {
             .map(|result| result.index)
             .collect();
 
-        self.search_results.sort_by(|a, b| {
-            let a_pull = self.pull_requests.get(*a);
-            let b_pull = self.pull_requests.get(*b);
-            let a_ts = match self.search_sort {
-                SearchSort::UpdatedAt => a_pull.map(|pull| pull.updated_at_unix_ms),
-                SearchSort::CreatedAt => a_pull.map(|pull| pull.created_at_unix_ms),
-            }
-            .unwrap_or_default();
-            let b_ts = match self.search_sort {
-                SearchSort::UpdatedAt => b_pull.map(|pull| pull.updated_at_unix_ms),
-                SearchSort::CreatedAt => b_pull.map(|pull| pull.created_at_unix_ms),
-            }
-            .unwrap_or_default();
-            b_ts.cmp(&a_ts)
-        });
+        if !has_query {
+            self.search_results.sort_by(|a, b| {
+                let a_pull = self.pull_requests.get(*a);
+                let b_pull = self.pull_requests.get(*b);
+                let a_ts = match self.search_sort {
+                    SearchSort::UpdatedAt => a_pull.map(|pull| pull.updated_at_unix_ms),
+                    SearchSort::CreatedAt => a_pull.map(|pull| pull.created_at_unix_ms),
+                }
+                .unwrap_or_default();
+                let b_ts = match self.search_sort {
+                    SearchSort::UpdatedAt => b_pull.map(|pull| pull.updated_at_unix_ms),
+                    SearchSort::CreatedAt => b_pull.map(|pull| pull.created_at_unix_ms),
+                }
+                .unwrap_or_default();
+                b_ts.cmp(&a_ts)
+            });
+        }
 
         if self.search_selected >= self.search_results.len() {
             self.search_selected = self.search_results.len().saturating_sub(1);
@@ -288,10 +293,10 @@ fn scope_matches(
         SearchScope::All => true,
         SearchScope::Author => viewer_login
             .map(|login| pull.author.eq_ignore_ascii_case(login))
-            .unwrap_or(true),
+            .unwrap_or(false),
         SearchScope::Reviewer => viewer_login
             .map(|login| pull.has_reviewer(login))
-            .unwrap_or(true),
+            .unwrap_or(false),
     }
 }
 
