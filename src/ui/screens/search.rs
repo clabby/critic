@@ -4,7 +4,10 @@ use crate::{
     app::state::{AppState, SearchSort},
     domain::PullRequestReviewStatus,
     ui::{
-        components::{search_box, shared::short_timestamp},
+        components::{
+            search_box,
+            shared::{short_preview, short_timestamp},
+        },
         theme,
     },
 };
@@ -222,6 +225,29 @@ fn render_results(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
                 SearchSort::CreatedAt => pull.created_at_unix_ms,
             };
 
+            let (author_marker, author_marker_style) = if state
+                .viewer_login
+                .as_deref()
+                .is_some_and(|login| pull.author.eq_ignore_ascii_case(login))
+            {
+                ("@ ", theme::dim())
+            } else if state
+                .viewer_login
+                .as_deref()
+                .is_some_and(|login| pull.has_reviewer(login))
+            {
+                ("R ", theme::dim())
+            } else {
+                ("  ", theme::dim())
+            };
+
+            let author_text_width = author_col_width.saturating_sub(2) as usize;
+            let author_text = if author_text_width == 0 {
+                String::new()
+            } else {
+                short_preview(&pull.author, author_text_width)
+            };
+
             Row::new([
                 Cell::new(Span::styled(short_timestamp(age_ms), theme::dim())),
                 Cell::new(Span::styled(status_text, status_style)),
@@ -230,7 +256,10 @@ fn render_results(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
                         .alignment(Alignment::Right),
                 ),
                 Cell::new(pull.title.clone()),
-                Cell::new(Span::styled(pull.author.clone(), theme::dim())),
+                Cell::new(Line::from(vec![
+                    Span::styled(author_marker, author_marker_style),
+                    Span::styled(author_text, theme::dim()),
+                ])),
             ])
         })
         .collect();
