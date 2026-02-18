@@ -329,11 +329,9 @@ fn map_pull_request(
 ) -> PullRequestSummary {
     let head = pull.head;
     let base = pull.base;
-    let updated = pull.updated_at.or(pull.created_at);
-    let updated_at = updated
-        .map(|time| time.to_rfc3339())
-        .unwrap_or_else(|| "unknown".to_owned());
-    let updated_ms = updated
+    let updated_ms = pull
+        .updated_at
+        .or(pull.created_at)
         .map(|time| time.timestamp_millis())
         .unwrap_or_default();
 
@@ -352,7 +350,6 @@ fn map_pull_request(
         head_sha: head.sha,
         base_sha: base.sha,
         html_url: pull.html_url.map(|url| url.to_string()),
-        updated_at,
         updated_at_unix_ms: updated_ms,
         review_status,
     }

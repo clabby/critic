@@ -1887,7 +1887,6 @@ mod tests {
             head_sha: "headsha".to_owned(),
             base_sha: "basesha".to_owned(),
             html_url: Some("https://example.com".to_owned()),
-            updated_at: "now".to_owned(),
             updated_at_unix_ms: 0,
             review_status: None,
         };

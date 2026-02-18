@@ -17,7 +17,7 @@ use ratatui::{
     },
 };
 
-const DATE_COL_WIDTH: usize = 5;
+const DATE_COL_WIDTH: usize = 12;
 const STATUS_COL_WIDTH: usize = 1;
 const MIN_AUTHOR_COL_WIDTH: usize = 4;
 const MAX_AUTHOR_COL_WIDTH: usize = 18;
@@ -104,7 +104,7 @@ fn render_results(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 
                 let author = fit_column_left(&pull.author, author_col_width);
                 let timestamp = fit_column_left(
-                    &short_timestamp(&pull.updated_at, pull.updated_at_unix_ms),
+                    &short_timestamp(pull.updated_at_unix_ms),
                     DATE_COL_WIDTH,
                 );
                 let status = fit_column_left(status_text, STATUS_COL_WIDTH);
