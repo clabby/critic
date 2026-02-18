@@ -277,7 +277,7 @@ pub async fn fetch_open_pull_requests(
     Ok(mapped)
 }
 
-/// Fetches the authenticated viewer login.
+/// Fetches the authenticated GitHub login for the current token.
 pub async fn fetch_viewer_login(client: &octocrab::Octocrab) -> Result<String> {
     let user = client.current().user().await?;
     Ok(user.login)

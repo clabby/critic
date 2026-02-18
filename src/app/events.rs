@@ -26,6 +26,7 @@ pub enum WorkerMessage {
     },
     PullRequestResolved {
         repository_label: String,
+        viewer_login: Option<String>,
         pull_number: u64,
         result: Result<PullRequestSummary, String>,
     },
@@ -118,9 +119,11 @@ pub fn spawn_load_specific_pull_request(
         let message = match resolve_repository(owner, repo).await {
             Ok(repository) => {
                 let label = repository.label();
+                let viewer_login = fetch_viewer_login(&client).await.ok();
                 match fetch_pull_request_summary(&client, &repository, pull_number).await {
                     Ok(pull) => WorkerMessage::PullRequestResolved {
                         repository_label: label,
+                        viewer_login,
                         pull_number,
                         result: Ok(pull),
                     },
@@ -135,6 +138,7 @@ pub fn spawn_load_specific_pull_request(
                         };
                         WorkerMessage::PullRequestResolved {
                             repository_label: label,
+                            viewer_login,
                             pull_number,
                             result: Err(detail),
                         }
@@ -143,6 +147,7 @@ pub fn spawn_load_specific_pull_request(
             }
             Err(error) => WorkerMessage::PullRequestResolved {
                 repository_label: "(unknown repository)".to_owned(),
+                viewer_login: None,
                 pull_number,
                 result: Err(error.to_string()),
             },

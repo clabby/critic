@@ -316,11 +316,13 @@ async fn process_worker_message(
         }
         WorkerMessage::PullRequestResolved {
             repository_label,
+            viewer_login,
             pull_number,
             result,
         } => {
             state.end_operation();
             state.set_repository_label(repository_label);
+            state.set_viewer_login(viewer_login);
 
             match result {
                 Ok(pull) => {

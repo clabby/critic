@@ -130,6 +130,10 @@ impl AppState {
 
     pub fn set_viewer_login(&mut self, login: Option<String>) {
         self.viewer_login = login;
+    }
+
+    pub fn set_viewer_login(&mut self, login: Option<String>) {
+        self.viewer_login = login;
         self.recompute_search();
     }
 
