@@ -10,20 +10,20 @@ use crate::{
 };
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Rect},
+    layout::{Alignment, Constraint, Layout, Rect},
     text::{Line, Span},
     widgets::{
-        Block, Borders, List, ListItem, ListState, Scrollbar, ScrollbarOrientation, ScrollbarState,
+        Block, Borders, Cell, HighlightSpacing, Paragraph, Row, Scrollbar, ScrollbarOrientation,
+        ScrollbarState, Table, TableState,
     },
 };
 
-const DATE_COL_WIDTH: usize = 12;
-const STATUS_COL_WIDTH: usize = 1;
-const MIN_AUTHOR_COL_WIDTH: usize = 4;
-const MAX_AUTHOR_COL_WIDTH: usize = 18;
-const MIN_TITLE_COL_WIDTH: usize = 12;
-const COLUMN_SPACER_COUNT: usize = 4;
-const LIST_PREFIX_WIDTH: usize = 2;
+const DATE_COL_WIDTH: u16 = 12;
+const STATUS_COL_WIDTH: u16 = 1;
+const MIN_AUTHOR_COL_WIDTH: u16 = 4;
+const MAX_AUTHOR_COL_WIDTH: u16 = 18;
+const MIN_TITLE_COL_WIDTH: u16 = 12;
+const COLUMN_SPACING: u16 = 1;
 
 pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let rows = Layout::vertical([Constraint::Length(3), Constraint::Min(6)]).split(area);
@@ -64,83 +64,88 @@ fn render_results(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         (inner, None)
     };
 
+    if state.search_results.is_empty() {
+        let msg = Paragraph::new(Line::styled(
+            "No open pull requests match this query.",
+            theme::dim(),
+        ));
+        frame.render_widget(msg, list_area);
+        return;
+    }
+
     let number_col_width = state
         .search_results
         .iter()
         .filter_map(|index| state.pull_requests.get(*index))
-        .map(|pull| format!("#{}", pull.number).chars().count())
+        .map(|pull| format!("#{}", pull.number).len() as u16)
         .max()
         .unwrap_or(2);
 
-    let metadata_width = DATE_COL_WIDTH + STATUS_COL_WIDTH + number_col_width + COLUMN_SPACER_COUNT;
-    let row_width = usize::from(list_area.width).saturating_sub(LIST_PREFIX_WIDTH);
-    let available_width = row_width.saturating_sub(metadata_width);
-    let max_author_by_min_title = available_width.saturating_sub(MIN_TITLE_COL_WIDTH);
-    let max_author_by_ratio = available_width / 3;
+    // The highlight symbol "▸ " occupies 2 columns; 4 inter-column gaps each cost COLUMN_SPACING.
+    let fixed = DATE_COL_WIDTH + STATUS_COL_WIDTH + number_col_width;
+    let overhead = COLUMN_SPACING * 4 + 2;
+    let available = list_area.width.saturating_sub(fixed + overhead);
+    let max_author_by_min_title = available.saturating_sub(MIN_TITLE_COL_WIDTH);
+    let max_author_by_ratio = available / 3;
     let max_author_that_fits = max_author_by_min_title.min(max_author_by_ratio);
-    let author_col_width = max_author_that_fits.min(MAX_AUTHOR_COL_WIDTH);
-    let author_col_width = if author_col_width >= MIN_AUTHOR_COL_WIDTH {
-        author_col_width
+    let author_col_width = if max_author_that_fits.min(MAX_AUTHOR_COL_WIDTH) >= MIN_AUTHOR_COL_WIDTH
+    {
+        max_author_that_fits.min(MAX_AUTHOR_COL_WIDTH)
     } else {
         max_author_that_fits
     };
 
-    let items: Vec<ListItem<'static>> = if state.search_results.is_empty() {
-        vec![ListItem::new(Line::from(vec![Span::styled(
-            "No open pull requests match this query.",
-            theme::dim(),
-        )]))]
-    } else {
-        state
-            .search_results
-            .iter()
-            .filter_map(|index| state.pull_requests.get(*index))
-            .map(|pull| {
-                let status_text = match pull.review_status {
-                    Some(PullRequestReviewStatus::Approved) => "A",
-                    Some(PullRequestReviewStatus::ChangesRequested) => "R",
-                    None => "",
-                };
+    let widths = [
+        Constraint::Length(author_col_width),
+        Constraint::Length(DATE_COL_WIDTH),
+        Constraint::Length(STATUS_COL_WIDTH),
+        Constraint::Length(number_col_width),
+        Constraint::Fill(1),
+    ];
 
-                let author = fit_column_left(&pull.author, author_col_width);
-                let timestamp = fit_column_left(
-                    &short_timestamp(pull.updated_at_unix_ms),
-                    DATE_COL_WIDTH,
-                );
-                let status = fit_column_left(status_text, STATUS_COL_WIDTH);
-                let number = fit_column_right(&format!("#{}", pull.number), number_col_width);
+    let rows: Vec<Row<'_>> = state
+        .search_results
+        .iter()
+        .filter_map(|index| state.pull_requests.get(*index))
+        .map(|pull| {
+            let status_text = match pull.review_status {
+                Some(PullRequestReviewStatus::Approved) => "A",
+                Some(PullRequestReviewStatus::ChangesRequested) => "R",
+                None => "",
+            };
 
-                let status_style = match pull.review_status {
-                    Some(PullRequestReviewStatus::Approved) => theme::resolved_thread(),
-                    Some(PullRequestReviewStatus::ChangesRequested) => theme::error(),
-                    None => theme::dim(),
-                };
+            let status_style = match pull.review_status {
+                Some(PullRequestReviewStatus::Approved) => theme::resolved_thread(),
+                Some(PullRequestReviewStatus::ChangesRequested) => theme::error(),
+                None => theme::dim(),
+            };
 
-                ListItem::new(Line::from(vec![
-                    Span::styled(author, theme::dim()),
-                    Span::raw(" "),
-                    Span::styled(timestamp, theme::dim()),
-                    Span::raw(" "),
-                    Span::styled(status, status_style),
-                    Span::raw(" "),
-                    Span::styled(number, theme::title()),
-                    Span::raw(" "),
-                    Span::raw(pull.title.clone()),
-                ]))
-            })
-            .collect()
-    };
+            Row::new([
+                Cell::new(Span::styled(pull.author.clone(), theme::dim())),
+                Cell::new(Span::styled(
+                    short_timestamp(pull.updated_at_unix_ms),
+                    theme::dim(),
+                )),
+                Cell::new(Span::styled(status_text, status_style)),
+                Cell::new(
+                    Line::styled(format!("#{}", pull.number), theme::title())
+                        .alignment(Alignment::Right),
+                ),
+                Cell::new(pull.title.clone()),
+            ])
+        })
+        .collect();
 
-    let list = List::new(items)
-        .highlight_style(theme::selected())
-        .highlight_symbol("▸ ");
+    let table = Table::new(rows, widths)
+        .column_spacing(COLUMN_SPACING)
+        .row_highlight_style(theme::selected())
+        .highlight_symbol("▸ ")
+        .highlight_spacing(HighlightSpacing::Always);
 
-    let mut list_state = ListState::default();
-    if !state.search_results.is_empty() {
-        list_state.select(Some(state.search_selected));
-    }
+    let mut table_state = TableState::default();
+    table_state.select(Some(state.search_selected));
 
-    frame.render_stateful_widget(list, list_area, &mut list_state);
+    frame.render_stateful_widget(table, list_area, &mut table_state);
 
     let viewport_height = usize::from(list_area.height);
     let content_height = state.search_results.len();
@@ -149,7 +154,7 @@ fn render_results(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         && let Some(scrollbar_area) = scrollbar_area
     {
         let max_scroll = content_height.saturating_sub(viewport_height);
-        let scroll = list_state.offset().min(max_scroll);
+        let scroll = table_state.offset().min(max_scroll);
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(None)
             .end_symbol(None)
@@ -161,46 +166,4 @@ fn render_results(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             .position(scroll);
         frame.render_stateful_widget(scrollbar, scrollbar_area, &mut scrollbar_state);
     }
-}
-
-fn fit_column_left(value: &str, width: usize) -> String {
-    let fitted = truncate_to_width(value, width);
-    let fitted_len = fitted.chars().count();
-    if fitted_len >= width {
-        return fitted;
-    }
-
-    format!("{fitted}{}", " ".repeat(width - fitted_len))
-}
-
-fn fit_column_right(value: &str, width: usize) -> String {
-    let fitted = truncate_to_width(value, width);
-    let fitted_len = fitted.chars().count();
-    if fitted_len >= width {
-        return fitted;
-    }
-
-    format!("{}{fitted}", " ".repeat(width - fitted_len))
-}
-
-fn truncate_to_width(value: &str, width: usize) -> String {
-    if value.chars().count() <= width {
-        return value.to_owned();
-    }
-    if width == 0 {
-        return String::new();
-    }
-    if width == 1 {
-        return "…".to_owned();
-    }
-    if width <= 3 {
-        return value.chars().take(width).collect();
-    }
-
-    let mut out = String::new();
-    for ch in value.chars().take(width - 1) {
-        out.push(ch);
-    }
-    out.push('…');
-    out
 }
