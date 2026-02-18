@@ -19,6 +19,9 @@ use tokio::sync::mpsc::UnboundedSender;
 /// Message sent from background workers to the UI event loop.
 #[derive(Debug)]
 pub enum WorkerMessage {
+    ViewerLoginLoaded {
+        viewer_login: Option<String>,
+    },
     PullRequestsLoaded {
         repository_label: String,
         viewer_login: Option<String>,
@@ -103,6 +106,14 @@ pub fn spawn_load_pull_requests(
         };
 
         let _ = tx.send(message);
+    });
+}
+
+/// Loads authenticated viewer login for header display.
+pub fn spawn_load_viewer_login(tx: UnboundedSender<WorkerMessage>, client: octocrab::Octocrab) {
+    tokio::spawn(async move {
+        let viewer_login = fetch_viewer_login(&client).await.ok();
+        let _ = tx.send(WorkerMessage::ViewerLoginLoaded { viewer_login });
     });
 }
 

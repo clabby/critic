@@ -67,6 +67,7 @@ pub fn render(frame: &mut Frame<'_>, state: &mut AppState, markdown: &mut Markdo
         &HeaderModel {
             app_label: "🔍 critic".to_owned(),
             context_label,
+            viewer_login: state.viewer_login.clone(),
             review_tabs,
             operation: state.operation_display(),
             error: state.error_message.clone(),

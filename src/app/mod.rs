@@ -12,7 +12,7 @@ use crate::{
         events::{
             MutationRequest, WorkerMessage, spawn_apply_mutation, spawn_load_pull_request_data,
             spawn_load_pull_request_diff, spawn_load_pull_requests,
-            spawn_load_specific_pull_request,
+            spawn_load_specific_pull_request, spawn_load_viewer_login,
         },
         state::{
             AppState, PendingReviewCommentSide, ReviewSubmissionEvent, ReviewTab, SearchInputState,
@@ -87,6 +87,8 @@ pub async fn run(config: AppConfig) -> anyhow::Result<()> {
     let client = create_client()
         .await
         .context("failed to create authenticated GitHub client")?;
+
+    spawn_load_viewer_login(tx.clone(), client.clone());
 
     if let Some(pull_number) = config.pull {
         state.begin_operation(format!("Loading pull request #{pull_number}"));
@@ -244,6 +246,11 @@ async fn process_worker_message(
     last_persisted_draft_signature: &mut Option<String>,
 ) {
     match message {
+        WorkerMessage::ViewerLoginLoaded { viewer_login } => {
+            if let Some(login) = viewer_login {
+                state.set_viewer_login(Some(login));
+            }
+        }
         WorkerMessage::PullRequestsLoaded {
             repository_label,
             viewer_login,
@@ -253,7 +260,9 @@ async fn process_worker_message(
                 state.end_operation();
             }
             state.set_repository_label(repository_label);
-            state.set_viewer_login(viewer_login);
+            if let Some(login) = viewer_login {
+                state.set_viewer_login(Some(login));
+            }
 
             match result {
                 Ok(pulls) => {

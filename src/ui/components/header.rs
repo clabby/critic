@@ -13,6 +13,7 @@ use ratatui::{
 pub struct HeaderModel {
     pub app_label: String,
     pub context_label: String,
+    pub viewer_login: Option<String>,
     pub review_tabs: Option<HeaderTabs>,
     pub operation: Option<String>,
     pub error: Option<String>,
@@ -73,6 +74,18 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, model: &HeaderModel) {
         );
         frame.render_widget(Paragraph::new(" "), right_sections[1]);
         frame.render_widget(progress_gauge(progress), right_sections[2]);
+    } else if let Some(viewer) = model.viewer_login.as_ref() {
+        let viewer_label = format!("@{viewer}");
+        let viewer_width = viewer_label.chars().count().min(24) as u16;
+        let columns =
+            Layout::horizontal([Constraint::Min(1), Constraint::Length(viewer_width)]).split(inner);
+
+        frame.render_widget(Paragraph::new(top_left), columns[0]);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(viewer_label, theme::dim())))
+                .alignment(Alignment::Right),
+            columns[1],
+        );
     } else {
         frame.render_widget(Paragraph::new(top_left), inner);
     }
