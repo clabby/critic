@@ -593,11 +593,27 @@ fn compute_highlight_ranges(
         }
     }
 
-    if merged.len() == 1 && merged[0].start == 0 && merged[0].end >= len {
+    if only_whitespace_uncovered(line, &merged) {
         vec![PullRequestDiffHighlightRange::full_line()]
     } else {
         merged
     }
+}
+
+/// Returns true when every character outside the highlighted ranges is whitespace.
+fn only_whitespace_uncovered(line: &str, ranges: &[PullRequestDiffHighlightRange]) -> bool {
+    let bytes = line.as_bytes();
+    let len = bytes.len();
+    let mut pos = 0;
+    for range in ranges {
+        let start = range.start.min(len);
+        let end = range.end.min(len);
+        if !bytes[pos..start].iter().all(u8::is_ascii_whitespace) {
+            return false;
+        }
+        pos = end;
+    }
+    bytes[pos..].iter().all(u8::is_ascii_whitespace)
 }
 
 fn classify_row_kind(
@@ -857,7 +873,7 @@ mod tests {
     }
 
     #[test]
-    fn compute_highlight_ranges_preserves_distinct_ranges() {
+    fn compute_highlight_ranges_marks_full_line_when_gap_is_whitespace() {
         let ranges = compute_highlight_ranges(
             "foo bar",
             &[
@@ -865,18 +881,21 @@ mod tests {
                 RawDifftChange { start: 4, end: 7 },
             ],
         );
-        assert_eq!(
-            ranges,
-            vec![
-                PullRequestDiffHighlightRange { start: 0, end: 3 },
-                PullRequestDiffHighlightRange { start: 4, end: 7 },
-            ]
-        );
+        assert_eq!(ranges, vec![PullRequestDiffHighlightRange::full_line()]);
     }
 
     #[test]
     fn compute_highlight_ranges_marks_full_line_when_range_spans_line() {
         let ranges = compute_highlight_ranges("foobar", &[RawDifftChange { start: 0, end: 6 }]);
+        assert_eq!(ranges, vec![PullRequestDiffHighlightRange::full_line()]);
+    }
+
+    #[test]
+    fn compute_highlight_ranges_marks_full_line_when_only_whitespace_uncovered() {
+        let ranges = compute_highlight_ranges(
+            "    let x = foo();",
+            &[RawDifftChange { start: 4, end: 18 }],
+        );
         assert_eq!(ranges, vec![PullRequestDiffHighlightRange::full_line()]);
     }
 
